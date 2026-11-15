@@ -18,6 +18,7 @@ from ten_runtime import (
 import json
 import asyncio
 import os
+from .expected_language import pop_expected_language
 
 
 # Constants for audio configuration
@@ -439,10 +440,11 @@ def test_metrics(extension_name: str, config_dir: str) -> None:
     # Load config file
     with open(config_file_path, "r") as f:
         config: dict[str, Any] = json.load(f)
+    expected_language = pop_expected_language(config, METRICS_EXPECTED_LANGUAGE)
 
     # Expected test results
     expected_result = {
-        "language": METRICS_EXPECTED_LANGUAGE,
+        "language": expected_language,
         "session_id": METRICS_SESSION_ID,
     }
 
