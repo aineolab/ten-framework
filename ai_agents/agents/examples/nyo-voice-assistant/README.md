@@ -17,7 +17,7 @@ agora_rtc → streamid_adapter → stt (nyo_asr_python) → main_control → llm
 | `AGORA_APP_ID` | yes | Agora App ID |
 | `AGORA_APP_CERTIFICATE` | no | Agora App Certificate |
 | `NYO_API_KEY` | yes | Bearer key for the NYO gateway. Missing → FATAL `-1000` at init |
-| `NYO_BASE_URL` | yes | Gateway URL, for example `wss://gateway.example.net`. There is no default |
+| `NYO_BASE_URL` | yes | Service address: `wss://api.nyolab.ai`, prefilled in `ai_agents/.env.example`. Change it only for a private or staging deployment |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | yes | Any OpenAI-compatible LLM |
 
 `ws://` is accepted only for loopback (`127.0.0.1`, `localhost`, `::1`), for example through
