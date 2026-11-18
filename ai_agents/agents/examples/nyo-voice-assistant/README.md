@@ -2,8 +2,10 @@
 
 The standard voice assistant (Agora RTC → STT → LLM → TTS → Agora RTC) with speech served by a
 self-hosted NYO speech gateway (NRSP v1): `nyo_asr_python` for STT and
-`nyo_tts_python` for TTS. It is tuned for Filipino (`fil`) with the fine-tuned Whisper model
-`fw/whisper-large-v3-pld-fil-norm`.
+`nyo_tts_python` for TTS. It is set up for Filipino (`fil`) with `halohalo/asr-fil`, the Filipino
+speech-to-text model that every NYO server serves (a fine-tuned Whisper base). The larger
+`fw/whisper-large-v3-pld-fil-norm` is slightly more accurate but is not served by every server: an agent configured
+with it fails at start (`model_not_found`) whenever the answering server lacks it.
 
 ```
 agora_rtc → streamid_adapter → stt (nyo_asr_python) → main_control → llm (openai_llm2_python)
