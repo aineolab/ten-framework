@@ -5,7 +5,7 @@
   "params": {
     "api_key": "${env:NYO_API_KEY|}",
     "base_url": "${env:NYO_BASE_URL|}",
-    "model": "fw/whisper-large-v3-pld-fil-norm",
+    "model": "halohalo/asr-fil",
     "language": "fil",
     "sample_rate": 16000,
     "interim_results": true,

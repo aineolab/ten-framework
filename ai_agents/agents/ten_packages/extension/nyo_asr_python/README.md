@@ -16,7 +16,7 @@ Full guide, message mapping table and known gaps: `docs/ten.md` in nyo-serve.
 | `params.base_url` | required, no default (`${env:NYO_BASE_URL\|}`) | the addon appends `/v1/asr`. `ws://` only to loopback unless `allow_insecure`. |
 | `params.allow_insecure` | `false` | `true` permits `ws://` to a non-local host. Otherwise that is FATAL `insecure_url` at init. |
 | `params.tls_verify` | `true` | verify the `wss://` certificate; a bad one is FATAL `tls_error`. |
-| `params.model` | `fw/whisper-large-v3-pld-fil-norm` (`property.json`) | any ASR id the gateway's `GET /v1/models` lists. Prefer an explicit `fw/<registry id>`: `halohalo/asr-<lang>` (also what an empty `model` derives from `language`) is an alias for the module's *current default* model, which a hot swap changes. Checked on start: not listed, or not an ASR model -> FATAL `model_not_found`; a `language` the model's `languages` does not list -> FATAL `language_not_supported`. |
+| `params.model` | `halohalo/asr-fil` (`property.json`) | any ASR id the gateway's `GET /v1/models` lists (see [Models on `api.nyolab.ai`](#models-on-apinyolabai)). `halohalo/asr-<lang>` (also what an empty `model` derives from `language`) is an alias for the gateway's *current default* model for that language, which a hot swap changes; name an explicit `fw/<registry id>` to pin one. For Hiligaynon on `api.nyolab.ai` name `fw/whisper-large-v3-pld-hil-norm`. Checked on start: not listed, or not an ASR model -> FATAL `model_not_found`; a `language` the model's `languages` does not list -> FATAL `language_not_supported`. |
 | `params.language` | `fil` | `bcl ceb fil hil ilo pam pag tsg war eng en zh es ...`; returned to TEN as BCP-47 (`fil-PH`, `en-US`). |
 | `params.sample_rate` | `16000` | 8000/16000/24000/48000. |
 | `params.interim_results` (`params.interim`) | `true` | maps to NRSP `config.interim`. |
@@ -27,9 +27,23 @@ Full guide, message mapping table and known gaps: `docs/ten.md` in nyo-serve.
 | `finalize_timeout_ms` | `2000` | max wait for `finalize_end`; `asr_finalize_end` is always sent. |
 | `dump`, `dump_path` | `false`, `/tmp` | writes the PCM sent upstream to `nyo_asr_in.pcm`. |
 
+## Models on `api.nyolab.ai`
+
+`GET /v1/models` is the authority; the extension reads it on start. Checked 2026-11-20 (gateway release
+`gateway-aws-4`, from its `/healthz` and published model table):
+
+| Model | What |
+|---|---|
+| `fw/flipvox-whisper-base-fil` (alias `halohalo/asr-fil`) | Filipino speech to text, the default |
+| `fw/whisper-large-v3-pld-fil-norm` | Filipino speech to text, large, slower |
+| `fw/whisper-large-v3-pld-hil-norm` | Hiligaynon speech to text |
+| `halohalo/tts-fil` | Filipino text to speech (Orpheus, 24 kHz, ten speakers) |
+| `halohalo/tts-hil` | Hiligaynon text to speech (SpeechT5, 16 kHz, one speaker) |
+
 ## Graph snippet (agents/examples/voice-assistant)
 
-Replace the `stt` node; connections stay as they are.
+Replace the `stt` node; connections stay as they are. This one is Hiligaynon; for Filipino use
+`"model": "halohalo/asr-fil", "language": "fil"`.
 
 ```json
 {
@@ -41,8 +55,9 @@ Replace the `stt` node; connections stay as they are.
     "params": {
       "api_key": "${env:NYO_API_KEY}",
       "base_url": "${env:NYO_BASE_URL}",
-      "model": "halohalo/asr-ceb",
-      "language": "ceb"
+      "model": "fw/whisper-large-v3-pld-hil-norm",
+      "language": "hil",
+      "endpointing_ms": 1000
     }
   }
 }
@@ -56,7 +71,9 @@ Frames go out as they arrive; while the socket is down the base class keeps up t
 `buffer_ms` of audio and the addon replays it, in order, before any live frame once the
 socket is back. Unexpected closes reconnect with 0.5/1/2/4/4... s backoff (10 attempts,
 NON_FATAL errors, then FATAL). HTTP 401/403 and server `fatal:true` errors are FATAL and stop
-retrying. Server timestamps are mapped through TEN's `AudioTimeline`, so `start_ms` stays correct
+retrying. A gateway whose engine is at its session cap answers `busy`: HTTP 503 with `Retry-After`
+on the upgrade, which the addon reports as NON_FATAL and retries with the same backoff, or a non-fatal
+error frame on an open socket, which it reports as NON_FATAL and the session continues. Server timestamps are mapped through TEN's `AudioTimeline`, so `start_ms` stays correct
 across reconnects and dropped audio. Every result carries `metadata.asr_info.backend` and
 `metadata.asr_info.model` (the model that served it, so a hot swap is visible); `vendor_metrics`
 carries the gateway's `server_ttfw_ms`/`server_ttlw_ms` and the serving `model`.

@@ -34,6 +34,19 @@ frames stream down. Full guide: `docs/ten.md` in nyo-serve.
 | `params.gc_freeze` | `true` | `gc.collect(); gc.freeze()` at the end of `on_init`, logged at info. It removes the gen-2 GC passes over the TEN + pydantic init-time heap from the audio path (measured in a TEN host: max per-frame cost 4067 us -> 125 us, a 4-8 ms stall otherwise, bench/results/ten.json). It is process-wide: it also freezes the init-time heap of every other extension in the same host. `false` leaves the host's GC alone. |
 | `dump`, `dump_path` | `false`, `/tmp` | per-request PCM `nyo_dump_<request_id>.pcm`. |
 
+## Models on `api.nyolab.ai`
+
+`GET /v1/models` is the authority; the extension reads it on start. Checked 2026-11-20 (gateway release
+`gateway-aws-4`, from its `/healthz` and published model table):
+
+| Model | What |
+|---|---|
+| `fw/flipvox-whisper-base-fil` (alias `halohalo/asr-fil`) | Filipino speech to text, the default |
+| `fw/whisper-large-v3-pld-fil-norm` | Filipino speech to text, large, slower |
+| `fw/whisper-large-v3-pld-hil-norm` | Hiligaynon speech to text |
+| `halohalo/tts-fil` | Filipino text to speech (Orpheus, 24 kHz, ten speakers) |
+| `halohalo/tts-hil` | Hiligaynon text to speech (SpeechT5, 16 kHz, one speaker) |
+
 ## Speakers
 
 A model may offer several speakers; the gateway lists them in `GET /v1/models` (`voices`, `default_voice`) and in
@@ -49,6 +62,10 @@ Orpheus Filipino (`halohalo/tts-fil`) offers ten speakers, ids `FIL_0051`, `FIL_
 `FIL_0079`, `FIL_0081`, `FIL_0084`, `FIL_0107`, `FIL_0113`, `FIL_0115` and `FIL_0135`. A gateway in front of
 another one must also allow the ids (`SAPIN_TTS_VOICES` on older releases).
 
+SpeechT5 Hiligaynon (`halohalo/tts-hil`) has one speaker: leave `params.voice` empty. Its audio is 16 kHz, so
+`halohalo/tts-fil` and `halohalo/tts-hil` are a pair of models with different rates for the `tts_guarder`
+`basic_audio_setting` test (`tests/configs/property_fil.json`, `property_hil.json`).
+
 ## Graph snippet (agents/examples/voice-assistant)
 
 ```json
@@ -62,7 +79,7 @@ another one must also allow the ids (`SAPIN_TTS_VOICES` on older releases).
     "params": {
       "api_key": "${env:NYO_API_KEY}",
       "base_url": "${env:NYO_BASE_URL}",
-      "model": "halohalo/tts-ceb",
+      "model": "halohalo/tts-fil",
       "voice": "FIL_0078"
     }
   }
@@ -76,6 +93,10 @@ Add `{"path": "../../../ten_packages/extension/nyo_tts_python"}` to `tenapp/mani
 Exactly one FATAL `tts_error` per extension instance; afterwards the socket is closed, nothing reconnects, and every
 request ends with `tts_audio_end(ERROR)` without another error. `vendor_info.vendor` is always `nyo`; an engine's
 name goes into the message. `request_event_interval_ms` counts from the request's first text (it includes TTFB).
+
+`busy` (the engine is at its cap) is not fatal. On an open socket it is request-scoped: that request ends with
+`tts_audio_end(ERROR)` and a NON_FATAL `tts_error` with `vendor_info.code = "busy"`, the socket stays up and the
+next request is sent as usual. On the upgrade it is HTTP 503 with `Retry-After`, which the reconnect loop retries.
 
 ## Tests
 

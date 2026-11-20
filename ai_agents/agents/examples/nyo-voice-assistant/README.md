@@ -2,10 +2,16 @@
 
 The standard voice assistant (Agora RTC → STT → LLM → TTS → Agora RTC) with speech served by a
 self-hosted NYO speech gateway (NRSP v1): `nyo_asr_python` for STT and
-`nyo_tts_python` for TTS. It is set up for Filipino (`fil`) with `halohalo/asr-fil`, the Filipino
-speech-to-text model that every NYO server serves (a fine-tuned Whisper base). The larger
-`fw/whisper-large-v3-pld-fil-norm` is slightly more accurate but is not served by every server: an agent configured
-with it fails at start (`model_not_found`) whenever the answering server lacks it.
+`nyo_tts_python` for TTS. It has two graphs:
+
+| Graph | Language | Speech to text | Text to speech |
+|---|---|---|---|
+| `nyo_voice_assistant` (starts by default) | Filipino (`fil`) | `halohalo/asr-fil`, the default Filipino model (on `api.nyolab.ai`: `fw/flipvox-whisper-base-fil`, a fine-tuned Whisper base) | `halohalo/tts-fil` (Orpheus, 24 kHz, ten speakers) |
+| `nyo_voice_assistant_hil` | Hiligaynon (`hil`) | `fw/whisper-large-v3-pld-hil-norm` | `halohalo/tts-hil` (SpeechT5, 16 kHz) |
+
+The larger Filipino model `fw/whisper-large-v3-pld-fil-norm` is also served on `api.nyolab.ai`. It is slower and
+not served by every NYO server: an agent configured with a model the answering server lacks fails at start
+(`model_not_found`). The Hiligaynon graph tells the LLM to answer in Hiligaynon through its `prompt`.
 
 ```
 agora_rtc → streamid_adapter → stt (nyo_asr_python) → main_control → llm (openai_llm2_python)
@@ -39,9 +45,13 @@ LLM would never be called.
 On start each extension calls `GET <gateway>/v1/models` and fails fast (FATAL, `vendor_info.code =
 "model_not_found"`, with the list of available ids) if `model` is not served. Any id that endpoint lists works:
 
-- ASR: `fw/<registry id>` (faster-whisper models, for example `fw/whisper-large-v3-pld-fil-norm`) or
-  `halohalo/asr-<lang>` (the gateway's default model for that language).
-- TTS: `halohalo/tts-<lang>`.
+- ASR: `fw/<registry id>` (on `api.nyolab.ai`: `fw/flipvox-whisper-base-fil`, `fw/whisper-large-v3-pld-fil-norm`,
+  `fw/whisper-large-v3-pld-hil-norm`) or `halohalo/asr-<lang>` (the gateway's default model for that language,
+  for example `halohalo/asr-fil`).
+- TTS: `halohalo/tts-<lang>` (on `api.nyolab.ai`: `halohalo/tts-fil`, `halohalo/tts-hil`).
+
+When an engine is at its session cap the gateway answers `busy`. Both extensions report it as a non-fatal error;
+a refused connection is retried and the agent keeps running.
 
 Swapping the model behind the gateway (hot swap) needs no change here; the model that served each result is
 reported in `asr_result.metadata.asr_info.model` and in the `vendor_metrics` metric.
@@ -54,7 +64,8 @@ task install
 task run
 ```
 
-Open the playground at http://localhost:3000 and pick the `nyo_voice_assistant` graph.
+Open the playground at http://localhost:3000 and pick the `nyo_voice_assistant` graph, or
+`nyo_voice_assistant_hil` for Hiligaynon.
 
 ## Metrics
 

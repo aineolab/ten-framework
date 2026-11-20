@@ -67,6 +67,7 @@ CANNED = {
     "es": "hola mundo esto es una prueba del sistema",
     "fil": "kumusta mundo ito ay isang pagsubok ng sistema",
     "ceb": "kumusta kalibutan kini usa ka pagsulay sa sistema",
+    "hil": "kumusta kalibutan ini isa ka pagtilaw sang sistema",
 }
 KNOWN_VENDORS = {"halohalo", "nvidia", "nyo", "deepgram", "soniox", "elevenlabs", "cartesia", "fw"}
 
@@ -75,7 +76,8 @@ def default_models() -> list[dict]:
     """Model list for GET /v1/models when the server was not given ``models=[...]``."""
     asr = [f"halohalo/asr-{lang}" for lang in sorted(ASR_LANGS | {"en", "zh", "es"})]
     asr += ["nyo/auto", "nvidia/nemotron-3.5-transcribe",
-            "fw/whisper-large-v3-pld-fil-norm", "fw/whisper-tiny"]
+            "fw/whisper-large-v3-pld-fil-norm", "fw/whisper-tiny",
+            "fw/flipvox-whisper-base-fil", "fw/whisper-large-v3-pld-hil-norm"]
     tts = [f"halohalo/tts-{lang}" for lang in sorted(ASR_LANGS)] + ["halohalo/tts-speecht5"]
     return ([{"id": m, "object": "model", "kind": "asr"} for m in asr]
             + [{"id": m, "object": "model", "kind": "tts"} for m in tts])
