@@ -490,7 +490,7 @@ class NYOASRExtension(AsyncASRBaseExtension, NYOASRRecognitionCallback):
                                   f"{params.get('language')!r}", category=LOG_CATEGORY_KEY_POINT)
             params["model"] = model = chosen["id"]
             self.config._model_from_language = False
-            if model.startswith("nvidia/nemotron") and "finalize_timeout_ms" not in self.config.model_fields_set:
+            if model.startswith("nvidia/nemotron") and not self.config.finalize_timeout_user_set:
                 # a Nemotron final is a batch decode (gateway finalize timer 30 s): wait past it, as for a
                 # configured Nemotron model (config.apply_defaults)
                 self.config.finalize_timeout_ms = NEMOTRON_FINALIZE_TIMEOUT_MS

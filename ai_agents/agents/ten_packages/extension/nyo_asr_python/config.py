@@ -92,6 +92,15 @@ class NYOASRConfig(BaseModel):
     # True when params.model was derived from params.language (halohalo/asr-<lang>): the preflight may then
     # replace it with a listed ASR model that declares that language (extension._models_verdict).
     _model_from_language: bool = PrivateAttr(default=False)
+    # Whether the user set finalize_timeout_ms, recorded before apply_defaults assigns it (pydantic then counts the
+    # field as set), so the preflight's Nemotron default (extension._models_verdict) still applies.
+    _finalize_user_set: bool | None = PrivateAttr(default=None)
+
+    @property
+    def finalize_timeout_user_set(self) -> bool:
+        if self._finalize_user_set is None:
+            return "finalize_timeout_ms" in self.model_fields_set
+        return self._finalize_user_set
 
     def apply_defaults(self) -> None:
         params = self.params if isinstance(self.params, dict) else {}
@@ -121,7 +130,9 @@ class NYOASRConfig(BaseModel):
         # Unless the user set finalize_timeout_ms, wait longer than the gateway's own finalize timer so its
         # finalize_end (and the real final) comes first: 3000 ms for streaming models, 30 s for a Nemotron
         # final (a batch decode).
-        if "finalize_timeout_ms" not in self.model_fields_set:
+        if self._finalize_user_set is None:
+            self._finalize_user_set = "finalize_timeout_ms" in self.model_fields_set
+        if not self._finalize_user_set:
             self.finalize_timeout_ms = (NEMOTRON_FINALIZE_TIMEOUT_MS if params.get("model") == NEMOTRON_MODEL
                                         else DEFAULT_FINALIZE_TIMEOUT_MS)
 

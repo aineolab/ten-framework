@@ -32,9 +32,10 @@ frames stream down. Full guide: `docs/ten.md` in nyo-serve.
   a sentence (`. ! ? … 。 ！ ？`, optionally followed by closing quotes/brackets, not after a digit), so an engine that speaks only at the end of its request (SpeechT5, `hil`) never stays silent
   past the gateway's stall timer (`tts_stall_s`, 10 s) on a long fast reply. **Hard cut**: a segment that reaches
   `segment_max_ms` + 2000 ms without such a sentence end (a numbered list `1.` ` Bigas,\n2.`, prices at every sentence
-  end, a long comma chain) is ended right after the next chunk that ends with `, ; :` (or `，；：、`), a list number at a
-  line start (`\n2.`), or a newline, optionally followed by closing quotes/brackets. Chunks end only after punctuation,
-  so this never cuts mid-word; a digit-period elsewhere (`₱3.` of `₱3.50`) is not a cut, so prices and decimals stay whole.
+  end, a long comma chain) is ended right after the next chunk that ends with `, ; :` (or `，；：、`) not right after a digit,
+  a list number at a line start (`\n2.`), or a newline, optionally followed by closing quotes/brackets. Chunks end only
+  after punctuation, so this never cuts mid-word, and a mark right after a digit is never a cut: `₱3.50`, `₱1,250`,
+  `₱1,234.50` and `10:30` stay whole (a chunk that only begins with digits, like `234.`, is not a list number).
   After (b) or (c) the next chunk of the same TEN request opens a new NRSP request `<request_id>~2`, `~3`, ... All
   segments are one TEN request: one `tts_audio_start`, one timeline (frame timestamps continue across segments),
   summed duration, TTFB from the first segment; `tts_audio_end` only on `text_input_end` (after the last segment's

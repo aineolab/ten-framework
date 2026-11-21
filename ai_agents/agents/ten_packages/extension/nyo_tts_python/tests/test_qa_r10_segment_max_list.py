@@ -15,10 +15,11 @@ from .helpers import harness, run, text_input
 
 
 def test_qa_r10_hard_cut_marks():
-    for yes in ("Bigas,", "Una;", "Ito ang listahan:", " Itlog,\n2.", "1.", "Ito ang listahan:\n1.", "linya\n",
+    for yes in ("Bigas,", "Una;", "Ito ang listahan:", " Itlog,\n2.", "Ito ang listahan:\n1.", "linya\n",
                 'sabi niya, "oo,"', "好，"):
         assert hard_cut(yes), yes
-    for no in ("₱3.", "ay 3.", "Salamat po", "nyolab.", "Salamat po.", ""):
+    # a bare "1." is not a list number: it cannot be told apart from the "234." of "₱1,234.50"
+    for no in ("₱3.", "ay 3.", "Salamat po", "nyolab.", "Salamat po.", "", "1."):
         assert not hard_cut(no), no
 
 
@@ -55,3 +56,12 @@ def test_qa_r10_hard_cut_waits_for_the_extra_time(monkeypatch):
             assert not [t for t in srv.received("text") if t["end"]]
 
     run(go())
+
+
+def test_final_review_hard_cut_keeps_numbers_whole():
+    # parse_sentences cuts after every , and . so "₱1,250" arrives as "…₱1," + "250." and "₱1,234.50" as
+    # "₱1," + "234." + "50"; none of these may be a hard-cut point. "10:" + "30" (a time) neither.
+    for chunk in ("Ang presyo ay ₱1,", "250.", "234.", " ₱2,", "Alas 10:"):
+        assert not hard_cut(chunk), chunk
+    for chunk in (" Bigas,", " sibuyas;", "\n2.", " Mga gulay:\n", "isda, "):
+        assert hard_cut(chunk), chunk

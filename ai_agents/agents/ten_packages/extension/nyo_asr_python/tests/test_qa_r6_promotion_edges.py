@@ -165,7 +165,21 @@ def test_r6_language_only_nemotron_pick_uses_the_nemotron_finalize_default(monke
         if not explicit:  # helpers always set finalize_timeout_ms: model an unset one
             cfg = make_config(language="en")
             cfg.model_fields_set.discard("finalize_timeout_ms")
+            cfg._finalize_user_set = False
             ext.config = cfg
         v = run(ext._models_verdict())
         assert v[0] == "ok" and ext.config.params["model"] == "nvidia/nemotron-3.5-transcribe", v
         assert ext.config.finalize_timeout_ms == (50 if explicit else 32_000), (explicit, ext.config.finalize_timeout_ms)
+
+
+def test_final_review_nemotron_default_applies_after_apply_defaults():
+    # apply_defaults assigns finalize_timeout_ms (pydantic then counts it as set); the user did not set it, so a
+    # preflight pick that resolves to Nemotron must still get the 32 s default.
+    from nyo_asr_python.config import NYOASRConfig
+    cfg = NYOASRConfig.model_validate({"params": {"api_key": "k", "base_url": "ws://127.0.0.1:9", "language": "fil"}})
+    cfg.apply_defaults()
+    assert cfg.finalize_timeout_user_set is False
+    cfg2 = NYOASRConfig.model_validate({"finalize_timeout_ms": 1234, "params": {"api_key": "k",
+                                        "base_url": "ws://127.0.0.1:9", "language": "fil"}})
+    cfg2.apply_defaults()
+    assert cfg2.finalize_timeout_user_set is True and cfg2.finalize_timeout_ms == 1234

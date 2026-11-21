@@ -109,7 +109,9 @@ def hint_splits(text: str) -> bool:
 # mark (, ; : and their CJK forms), a list number at a line start ("\n2."), or a newline, optionally followed by closing
 # quotes / brackets / whitespace. parse_sentences cuts only after punctuation, so this is never mid-word; a digit-period
 # after anything but a line start ("₱3." of "₱3.50") is not a cut, so decimals and prices stay whole
-_HARD_CUT = re.compile(r"(?:[,;:，；：、]|(?:\A|\n)[ \t]*\d+\.|\n)[\"'”’»」』)\]}\s]*\Z")
+# A clause mark not right after a digit ("₱1," + "250" and "10:" + "30" stay whole), a list number at a line
+# start ("\n2."; a chunk that only begins with digits, like the "234." of "₱1,234.50", is not one), or a newline.
+_HARD_CUT = re.compile(r"(?:(?<!\d)[,;:，；：、]|\n[ \t]*\d+\.|\n)[\"'”’»」』)\]}\s]*\Z")
 HARD_CUT_EXTRA_MS = 2000
 
 
