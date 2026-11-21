@@ -27,7 +27,7 @@ def test_streaming_increments_produce_start_audio_end_in_order():
             assert rec.of("finish")[0]["error"] is None
             # all increments + the end marker reached the server as NRSP `text`
             texts = srv.received("text")
-            assert [t["text"] for t in texts] == ["Kumusta ", "ka na?", ""]
+            assert [t["text"] for t in texts] == ["Kumusta ", "ka na?", ""]  # verbatim (the end follows at once: no hint)
             assert [t["end"] for t in texts] == [False, False, True]
             assert all(t["request_id"] == "r1" for t in texts)
 

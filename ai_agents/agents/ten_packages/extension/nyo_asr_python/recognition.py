@@ -5,6 +5,8 @@ Server -> client: ``result``, ``finalize_end``, ``error``, ``usage`` (optional `
 """
 
 import asyncio
+import contextlib
+import inspect
 import json
 import time
 from abc import ABC, abstractmethod
@@ -29,10 +31,20 @@ class NRSPConnectError(Exception):
         message: str,
         status_code: int | None = None,
         code: str | None = None,
+        retry_after: float | None = None,
     ):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+        self.retry_after = retry_after  # seconds, from a 429/503 handshake's Retry-After
+
+
+class _FinalizeEvent(asyncio.Event):
+    """Wakes a finalize waiter; ``ended`` tells a received finalize_end from a close."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ended = False
 
 
 class NYOASRRecognitionCallback(ABC):
@@ -58,6 +70,9 @@ class NYOASRRecognitionCallback(ABC):
     @abstractmethod
     async def on_close(self, expected: bool, reason: str) -> None: ...
 
+    async def on_finalize_end(self, finalize_id: str) -> None:
+        """A finalize_end arrived (before its waiter resumes). Optional."""
+
 
 def extract_status_code(error: BaseException) -> int | None:
     """HTTP status from a websockets handshake error (InvalidStatus & co)."""
@@ -68,6 +83,16 @@ def extract_status_code(error: BaseException) -> int | None:
     response = getattr(error, "response", None)
     value = getattr(response, "status_code", None)
     return value if isinstance(value, int) else None
+
+
+def extract_retry_after(error: BaseException) -> float | None:
+    """Retry-After (delta-seconds form) of a rejected handshake, if any."""
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    try:
+        value = headers.get("Retry-After") if headers is not None else None
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class NYOASRRecognition:
@@ -111,10 +136,11 @@ class NYOASRRecognition:
     def config_message(self) -> dict[str, Any]:
         msg: dict[str, Any] = {
             "type": "config",
-            "language": self.config.get("language", ""),
             "sample_rate": int(self.config.get("sample_rate", 16000)),
             "interim": bool(self.config.get("interim_results", True)),
         }
+        if self.config.get("language"):  # unknown language: omitted, the gateway uses the model's own
+            msg["language"] = self.config["language"]
         if self.config.get("endpointing_ms"):
             msg["endpointing_ms"] = int(self.config["endpointing_ms"])
         if self.config.get("hotwords"):
@@ -132,7 +158,7 @@ class NYOASRRecognition:
                 url, bool(self.config.get("tls_verify", True))
             )
         try:
-            self.websocket = await websockets.connect(
+            ws = await websockets.connect(
                 url,
                 additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 subprotocols=[NRSP_SUBPROTOCOL],
@@ -151,9 +177,14 @@ class NYOASRRecognition:
                     None,
                     code="tls_error",
                 ) from e
-            raise NRSPConnectError(str(e), extract_status_code(e)) from e
+            raise NRSPConnectError(str(e), extract_status_code(e), retry_after=extract_retry_after(e)) from e
+        if self._closing:
+            # close() ran while the handshake was in flight: honour it, never undo it
+            with contextlib.suppress(Exception):
+                await ws.close()
+            return
+        self.websocket = ws
         try:
-            self._closing = False
             self.is_started = True
             self.ready_event.clear()
             self._message_task = asyncio.create_task(self._message_handler())
@@ -165,15 +196,21 @@ class NYOASRRecognition:
                 # the reader, which will report it and then on_close().
                 self.ten_env.log_warn(f"NRSP config not sent, server closed first: {e}")
                 return
+            if self._closing:  # closed while the config went out
+                return
             self.ready_event.set()
             await self.callback.on_open()
-        except Exception:
+        except BaseException:  # also CancelledError (stop during connect): never leak the socket/reader
             self.is_started = False
             await self._abort_socket()
             raise
 
     async def _abort_socket(self) -> None:
+        self._closing = True  # our own abort: the reader's on_close is expected, not a reconnect trigger
         ws, self.websocket = self.websocket, None
+        task = self._message_task
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
         if ws is not None:
             try:
                 await ws.close()
@@ -226,7 +263,10 @@ class NYOASRRecognition:
     async def send_finalize(self, finalize_id: str) -> None:
         if not self.websocket or not self.is_connected():
             raise RuntimeError("WebSocket not connected")
-        self._finalize_events[finalize_id] = asyncio.Event()
+        ev = self._finalize_events.get(finalize_id)
+        if ev is None or ev.is_set():
+            # a duplicate id still in flight shares its event: the first finalize_end ends both waiters
+            self._finalize_events[finalize_id] = _FinalizeEvent()
         await self.websocket.send(
             json.dumps({"type": "finalize", "id": finalize_id})
         )
@@ -237,7 +277,9 @@ class NYOASRRecognition:
             return False
         try:
             await asyncio.wait_for(ev.wait(), timeout_ms / 1000)
-            return self.is_connected()
+            # True when the finalize_end arrived (even if the socket closed right after it); False when only a
+            # close / abort woke the waiter
+            return bool(getattr(ev, "ended", False))
         except asyncio.TimeoutError:
             return False
         finally:
@@ -298,8 +340,15 @@ class NYOASRRecognition:
                 await self.callback.on_usage({"server_ttlw_ms": msg["ttlw_ms"]})
             # D21: ids the client never sent (e.g. "auto-3" from server-side
             # endpointing) match no event here and are ignored.
-            ev = self._finalize_events.get(str(msg.get("id")))
+            fid = str(msg.get("id"))
+            ev = self._finalize_events.get(fid)
+            hook = getattr(self.callback, "on_finalize_end", None)
+            if hook is not None:
+                res = hook(fid)
+                if inspect.isawaitable(res):
+                    await res
             if ev is not None:
+                ev.ended = True
                 ev.set()
         elif mtype == "error":
             vendor = msg.get("vendor") or {}

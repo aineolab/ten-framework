@@ -67,6 +67,9 @@
             "buffer_ms": {
               "type": "int32"
             },
+            "reconnect_window_ms": {
+              "type": "int32"
+            },
             "gc_freeze": {
               "type": "bool"
             },

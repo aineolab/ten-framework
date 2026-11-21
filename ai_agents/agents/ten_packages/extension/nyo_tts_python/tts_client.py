@@ -31,16 +31,20 @@ from .const import (
     DEFAULT_BASE_URL,
     NRSP_SUBPROTOCOL,
     STALE_SET_MAX,
+    TEXT_FRAME_MAX_BYTES,
 )
 
 TTS_HDR = struct.Struct(">II")  # [u32 request_seq][u32 audio_offset_ms], big-endian
 
 
 class NYOTTSConnectError(Exception):
-    def __init__(self, message: str, status_code: int | None = None, code: str | None = None):
+    def __init__(self, message: str, status_code: int | None = None, code: str | None = None,
+                 retry_after: float | None = None, body_code: str | None = None):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+        self.body_code = body_code  # the NRSP error code of the upgrade rejection body, as sent
+        self.retry_after = retry_after  # seconds, from Retry-After on a 429/503 upgrade rejection
 
 
 def _status_of(e: BaseException) -> int | None:
@@ -49,6 +53,58 @@ def _status_of(e: BaseException) -> int | None:
         return v
     v = getattr(getattr(e, "response", None), "status_code", None)
     return v if isinstance(v, int) else None
+
+
+def _body_code_of(e: BaseException) -> tuple[str | None, str | None]:
+    """(code, message) of an NRSP error body on a rejected upgrade ({"type":"error","code",...}), else (None, None)."""
+    body = getattr(getattr(e, "response", None), "body", None)
+    if not body:
+        return None, None
+    try:
+        d = json.loads(bytes(body).decode("utf-8", "replace"))
+    except (ValueError, TypeError):
+        return None, None
+    if not isinstance(d, dict) or not isinstance(d.get("code"), str):
+        return None, None
+    msg = d.get("message")
+    return d["code"], msg if isinstance(msg, str) else None
+
+
+# NRSP rejection codes -> the extension's codes (unknown_voice: conclusive; model/language: maybe an engine down)
+_BODY_CODES = {
+    "unknown_voice": "unknown_voice",
+    "unsupported_voice": "unknown_voice",
+    "unknown_model": "model_not_found",
+    "unsupported_language": "language_not_supported",
+    "unsupported_sample_rate": "unsupported_sample_rate",
+}
+
+
+def split_text(text: str, max_chars: int) -> list[str]:
+    """Split ``text`` into pieces of at most ``max_chars`` characters, at whitespace where one is near the cut;
+    the pieces concatenate back to ``text`` exactly."""
+    if len(text) <= max_chars:
+        return [text]
+    out, i = [], 0
+    while len(text) - i > max_chars:
+        cut = i + max_chars
+        ws = max(text.rfind(" ", i + max_chars // 2, cut), text.rfind("\n", i + max_chars // 2, cut))
+        if ws > i:
+            cut = ws + 1
+        out.append(text[i:cut])
+        i = cut
+    out.append(text[i:])
+    return out
+
+
+def _retry_after_of(e: BaseException) -> float | None:
+    """Retry-After (delta-seconds) of a rejected upgrade, or None."""
+    headers = getattr(getattr(e, "response", None), "headers", None)
+    try:
+        v = headers.get("Retry-After") if headers is not None else None
+        return max(0.0, float(v)) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class _BoundedSet:
@@ -80,6 +136,7 @@ class NYOTTSClient:
         self.websocket = None
         self._reader: asyncio.Task | None = None
         self._closing = False
+        self._unusable = False  # the server announced it closes this socket (idle_timeout, engine swap, ...)
         # request bookkeeping
         self._seq_by_rid: dict[str, int] = {}
         self._rid_by_seq: dict[int, str] = {}
@@ -133,12 +190,18 @@ class NYOTTSClient:
             if transport.is_tls_verify_error(e):
                 host = urlparse(url).netloc
                 raise NYOTTSConnectError(f"TLS certificate verification failed for {host}: {e}; fix the certificate or set params.tls_verify=false", None, code="tls_error") from e
-            raise NYOTTSConnectError(str(e), _status_of(e)) from e
+            status = _status_of(e)
+            body_code, body_msg = _body_code_of(e)
+            msg = f"{e} ({body_code}: {body_msg})" if body_code else str(e)
+            raise NYOTTSConnectError(msg, status, code=_BODY_CODES.get(body_code or ""), body_code=body_code,
+                                     retry_after=_retry_after_of(e) if status in (429, 503) else None) from e
         self.connect_delay_ms = int((time.perf_counter() - t0) * 1000)
         self._closing = False
         self._reader = asyncio.create_task(self._read_loop())
 
-    async def stop(self) -> None:
+    async def stop(self, cancel_reader: bool = True) -> None:
+        """Close the socket. ``cancel_reader=False`` lets a reader that is still delivering a callback (e.g. the
+        one reporting the error that caused this stop) finish it; the reader then ends on the closed socket."""
         self._closing = True
         ws, self.websocket = self.websocket, None
         if ws is not None:
@@ -148,6 +211,8 @@ class NYOTTSClient:
                     await ws.close()
             except Exception as e:
                 self.ten_env.log_info(f"Error closing NYO TTS websocket: {e}")
+        if not cancel_reader:
+            return  # the reader ends by itself on the closed socket; a later stop() still cancels it
         task, self._reader = self._reader, None
         if task and not task.done() and task is not asyncio.current_task():
             task.cancel()
@@ -156,8 +221,19 @@ class NYOTTSClient:
             except asyncio.CancelledError:
                 pass
 
+    async def wait_closed(self, timeout: float) -> None:
+        """Wait (bounded) until the reader has delivered everything the server sent before its close."""
+        task = self._reader
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            await asyncio.wait({task}, timeout=timeout)
+
     def is_connected(self) -> bool:
-        return self.websocket is not None and self.websocket.state == State.OPEN
+        """Open AND usable for new requests (false once the server announced its close)."""
+        return not self._unusable and self.websocket is not None and self.websocket.state == State.OPEN
+
+    def mark_unusable(self) -> None:
+        """The server closes this socket next: take no new request; frames still in flight are delivered."""
+        self._unusable = True
 
     # ------------------------------------------------------------------ send
     async def send_text(self, request_id: str, text: str, end: bool) -> None:
@@ -166,14 +242,24 @@ class NYOTTSClient:
         if not self.is_connected():
             raise ConnectionError("NYO TTS websocket is not connected")
         self._live.add(request_id)
-        await self.websocket.send(
-            json.dumps({"type": "text", "request_id": request_id, "text": text, "end": end})
-        )
+        msg = json.dumps({"type": "text", "request_id": request_id, "text": text, "end": end})
+        if len(msg) <= TEXT_FRAME_MAX_BYTES:  # json.dumps is ASCII-only: len() is the encoded size
+            await self.websocket.send(msg)
+            return
+        # never send a frame the gateway refuses (frame_too_large is fatal for the socket): split the increment
+        # into several text messages of the same request; worst case 12 encoded bytes per character
+        pieces = split_text(text, max(1, (TEXT_FRAME_MAX_BYTES - 256 - len(request_id) * 12) // 12))
+        for i, piece in enumerate(pieces):
+            if request_id in self._cancelled_rids:
+                return  # flushed between two pieces: the rest is never sent
+            last = i == len(pieces) - 1
+            await self.websocket.send(
+                json.dumps({"type": "text", "request_id": request_id, "text": piece, "end": end and last}))
 
     async def flush(self, request_id: str) -> None:
         """Cancel one request in place: stale-mark its seq, tell the server, keep the socket."""
         self._cancel_local(request_id)
-        if self.is_connected():
+        if self.websocket is not None and self.websocket.state == State.OPEN:  # also on a socket marked unusable
             try:
                 await self.websocket.send(json.dumps({"type": "flush", "request_id": request_id}))
             except Exception as e:  # socket died; nothing left to cancel server-side

@@ -28,6 +28,11 @@ Fault injection rides on the API key (any key is valid except ``invalid``):
     ``<key>+stale3``    after a TTS flush, keep sending 3 frames with the old request_seq
     ``<key>+ttserr``    text containing ERROR_TRIGGER yields a non-fatal engine_error
     ``<key>+rt``        pace TTS audio at real time (default is ~8x faster)
+    ``<key>+restart``   first connection with that key: after the first audio frame / text
+                        message send fatal ``engine_restarting`` and close 1012 (as the real
+                        gateway does on an engine swap); later connections are normal
+    ``<key>+idle<N>``   close with fatal ``idle_timeout`` (1001) after N ms with no client
+                        message (the real gateway's idle rule, default 300 s there)
 Constructor kwargs give the same switches programmatically.
 Also: plain-HTTP ``GET /v1/models`` (same auth) lists models (``models=[...]`` overrides);
     ``endpointing_ms`` auto-cut emits final ``utt-N`` with metadata ``{model, finalize_id:
@@ -131,6 +136,8 @@ class _Opts:
     stale: int = 0
     ttserr: bool = False
     realtime: bool = False
+    restart: bool = False
+    idle_ms: int = 0
 
     @classmethod
     def from_key(cls, key: str) -> "_Opts":
@@ -140,6 +147,10 @@ class _Opts:
                 o.drop_after = int(m[1])
             elif m := re.fullmatch(r"stale(\d+)", tok):
                 o.stale = int(m[1])
+            elif m := re.fullmatch(r"idle(\d+)", tok):
+                o.idle_ms = int(m[1])
+            elif tok == "restart":
+                o.restart = True
             elif tok in ("fatal", "nofinal", "dropfin", "ttserr"):
                 setattr(o, tok, True)
             elif tok == "rt":
@@ -176,6 +187,7 @@ class FakeNRSPServer:
         self.connections: list[dict[str, Any]] = []  # one record per accepted socket
         self.log: list[tuple[str, dict]] = []        # (direction/kind, payload)
         self._dropped_keys: set[str] = set()
+        self._restarted_keys: set[str] = set()
         self._server = None
         self._req_counter = 0
 
@@ -252,6 +264,8 @@ class FakeNRSPServer:
             await ws.close(1008)
             return
         opts = _Opts.from_key(key)
+        rec["last_in"] = time.monotonic()
+        idle_task = asyncio.create_task(self._idle_watch(ws, rec, opts.idle_ms)) if opts.idle_ms else None
         try:
             if u.path == "/v1/asr":
                 await _AsrSession(self, ws, q, opts, rec).run()
@@ -260,6 +274,27 @@ class FakeNRSPServer:
         except Exception as e:  # ConnectionClosed and friends end the session
             if self.verbose:
                 print(f"[fake-nrsp] session ended: {type(e).__name__}: {e}")
+        finally:
+            if idle_task is not None:
+                idle_task.cancel()
+
+    async def _idle_watch(self, ws: ServerConnection, rec: dict, idle_ms: int) -> None:
+        with contextlib.suppress(Exception):
+            while True:
+                await asyncio.sleep(idle_ms / 4000)
+                if (time.monotonic() - rec["last_in"]) * 1000 > idle_ms:
+                    await self._send(ws, error_obj("idle_timeout", f"no client message for {idle_ms} ms", True))
+                    await ws.close(1001)
+                    return
+
+    async def _maybe_restart(self, ws: ServerConnection, opts: "_Opts", rec: dict) -> bool:
+        """``+restart``: fatal engine_restarting + close 1012, once per key. True if it fired."""
+        if not opts.restart or rec["key"] in self._restarted_keys:
+            return False
+        self._restarted_keys.add(rec["key"])
+        await self._send(ws, error_obj("engine_restarting", "engine swap in progress", True))
+        await ws.close(1012)
+        return True
 
     def _model_ok(self, path: str, model: str) -> bool:
         if self.models is not None:  # explicit list: websocket model must be in it
@@ -350,6 +385,7 @@ class _AsrSession:
     # ---- main loop
     async def run(self) -> None:
         async for raw in self.ws:
+            self.rec["last_in"] = time.monotonic()
             if isinstance(raw, bytes):
                 await self._on_audio(raw)
                 continue
@@ -401,6 +437,8 @@ class _AsrSession:
             self.silence_ms = 0
             self.speech_seen = True
             self.utt_ms += ms
+        if self.frames == 1 and await self.srv._maybe_restart(self.ws, self.opts, self.rec):
+            return
         if self.opts.fatal and self.frames == 1:
             await self.srv._send(self.ws, error_obj("engine_error", "injected fatal error", True, vendor="fake-vendor"))
             await self.ws.close(1011)
@@ -432,6 +470,7 @@ class _TtsSession:
     async def run(self) -> None:
         try:
             async for raw in self.ws:
+                self.rec["last_in"] = time.monotonic()
                 if isinstance(raw, bytes):
                     await self.srv._send(self.ws, error_obj("bad_message", "TTS takes no binary input"))
                     continue
@@ -464,6 +503,8 @@ class _TtsSession:
         if rid in self.dead:
             await self.srv._send(self.ws, error_obj("stale_request", f"request {rid} is finished or flushed",
                                                     request_id=rid))
+            return
+        if not self.requests and await self.srv._maybe_restart(self.ws, self.opts, self.rec):
             return
         if self.opts.fatal and not self.requests:
             await self.srv._send(self.ws, error_obj("engine_error", "injected fatal error", True,

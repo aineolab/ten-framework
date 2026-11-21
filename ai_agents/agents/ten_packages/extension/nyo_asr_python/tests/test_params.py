@@ -17,13 +17,17 @@ def test_defaults_applied():
     assert p["sample_rate"] == 16000
     assert p["language"] == "fil"
     assert p["model"] == "halohalo/asr-fil"  # derived from the language
-    assert cfg.finalize_timeout_ms == 2000
+    assert cfg.finalize_timeout_ms == 3500  # above the gateway's own 3000 ms finalize timer (QA r2 N4)
     cfg.validate_config()
 
 
 @pytest.mark.parametrize(
     "lang,model",
-    [("ceb", "halohalo/asr-ceb"), ("pag", "halohalo/asr-pag"), ("en", "nyo/auto")],
+    # always halohalo/asr-<lang>; the preflight reports model_not_found (naming the served ids) if not listed.
+    # BCP-47 tags and aliases are normalised first (QA r4).
+    [("ceb", "halohalo/asr-ceb"), ("pag", "halohalo/asr-pag"), ("eng", "halohalo/asr-eng"),
+     ("pam", "halohalo/asr-pam"), ("en", "halohalo/asr-en"), ("fil-PH", "halohalo/asr-fil"),
+     ("HIL-ph", "halohalo/asr-hil"), ("tl", "halohalo/asr-fil"), ("en-PH", "halohalo/asr-eng")],
 )
 def test_model_derived_from_language(lang, model):
     assert make_config(language=lang).params["model"] == model
@@ -57,9 +61,16 @@ def test_bad_base_url_rejected(url):
         make_config(base_url=url).validate_config()
 
 
-def test_bad_sample_rate_rejected():
+@pytest.mark.parametrize("rate", [22050, 16000.0, "16000", 0])
+def test_bad_sample_rate_rejected(rate):
     with pytest.raises(ValueError, match="sample_rate"):
-        make_config(sample_rate=44100).validate_config()
+        make_config(sample_rate=rate).validate_config()
+
+
+@pytest.mark.parametrize("rate", [8000, 16000, 24000, 44100, 48000])
+def test_gateway_sample_rates_accepted(rate):
+    """serve/gateway.py ASR_RATES."""
+    make_config(sample_rate=rate).validate_config()
 
 
 @pytest.mark.parametrize(
@@ -96,9 +107,9 @@ def test_endpointing_ms_bool_is_rejected():
     make_config(endpointing_ms=0).validate_config()
 
 
-def test_gc_freeze_defaults_on():
-    assert make_config().params["gc_freeze"] is True
-    assert make_config(gc_freeze=False).params["gc_freeze"] is False
+def test_gc_freeze_defaults_off():
+    assert make_config().params["gc_freeze"] is False
+    assert make_config(gc_freeze=True).params["gc_freeze"] is True
 
 
 def test_transport_copies_are_byte_identical():
@@ -131,9 +142,12 @@ def _warns(env):
     return " | ".join(str(c.args[0]) for c in env.log_warn.call_args_list)
 
 
-def test_gc_freeze_is_applied_and_logged_by_default(monkeypatch):
+def test_gc_freeze_is_opt_in_and_logged(monkeypatch):
     from .helpers import make_extension
     env, calls = _init(make_extension(), {"api_key": "k", "base_url": "ws://127.0.0.1:9"}, monkeypatch)
+    assert calls == []
+    env, calls = _init(make_extension(), {"api_key": "k", "base_url": "ws://127.0.0.1:9", "gc_freeze": True},
+                       monkeypatch)
     assert calls == ["freeze"]
     assert any("gc.freeze" in str(c.args[0]) for c in env.log_info.call_args_list)
 

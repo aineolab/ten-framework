@@ -68,6 +68,18 @@
             "request_timeout_ms": {
               "type": "int32"
             },
+            "reconnect_window_ms": {
+              "type": "int32"
+            },
+            "segment_idle_ms": {
+              "type": "int32"
+            },
+            "segment_max_ms": {
+              "type": "int32"
+            },
+            "boundary_hint_ms": {
+              "type": "int32"
+            },
             "enable_words": {
               "type": "bool"
             },
