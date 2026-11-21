@@ -15,6 +15,7 @@ from .const import (
     DEFAULT_SAMPLE_RATE,
     DEFAULT_SEGMENT_IDLE_MS,
     DEFAULT_SEGMENT_MAX_MS,
+    DEFAULT_IDLE_OPEN_END_MS,
     VALID_SAMPLE_RATES,
 )
 
@@ -39,6 +40,7 @@ _PARAM_FIELDS = (
     "segment_idle_ms",
     "segment_max_ms",
     "boundary_hint_ms",
+    "idle_open_end_ms",
     "enable_words",
     "gc_freeze",
 )
@@ -63,6 +65,8 @@ class NYOTTSConfig(BaseModel):
     segment_max_ms: int = DEFAULT_SEGMENT_MAX_MS
     # a sentence-final chunk not followed by another within this long gets one " " increment (0 = never)
     boundary_hint_ms: int = DEFAULT_BOUNDARY_HINT_MS
+    # an idle-open request (no text_input_end, all segments spoken) with no chunk for this long ends (0 = never)
+    idle_open_end_ms: int = DEFAULT_IDLE_OPEN_END_MS
     enable_words: bool = False
     # Opt-in: gc.freeze() is process-wide (it affects every extension in the host).
     gc_freeze: bool = False
@@ -100,7 +104,7 @@ class NYOTTSConfig(BaseModel):
             v = getattr(self, name)
             if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        for name in ("segment_idle_ms", "segment_max_ms", "boundary_hint_ms"):
+        for name in ("segment_idle_ms", "segment_max_ms", "boundary_hint_ms", "idle_open_end_ms"):
             v = getattr(self, name)
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
                 raise ValueError(f"{name} must be a non-negative integer (0 = off)")

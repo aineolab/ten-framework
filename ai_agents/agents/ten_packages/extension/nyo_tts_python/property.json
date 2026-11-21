@@ -15,6 +15,7 @@
     "segment_idle_ms": 1000,
     "segment_max_ms": 6000,
     "boundary_hint_ms": 250,
+    "idle_open_end_ms": 0,
     "enable_words": false
   }
 }

@@ -113,6 +113,9 @@ def hint_splits(text: str) -> bool:
 # start ("\n2."; a chunk that only begins with digits, like the "234." of "₱1,234.50", is not one), or a newline.
 _HARD_CUT = re.compile(r"(?:(?<!\d)[,;:，；：、]|\n[ \t]*\d+\.|\n)[\"'”’»」』)\]}\s]*\Z")
 HARD_CUT_EXTRA_MS = 2000
+# an idle-open TEN request (no text_input_end, every segment spoken) checks this often whether the base class buffered
+# the next request; if so it ends (REQUEST_END) so finish_request releases that request
+IDLE_OPEN_POLL_S = 0.05
 
 
 def hard_cut(text: str) -> bool:
@@ -228,6 +231,7 @@ class _Request:
     hint_timer: asyncio.Task | None = None  # delayed sentence-boundary " " (boundary_hint_ms)
     firing: set = field(default_factory=set)  # timer tasks past their sleep: never cancelled (they hold send_lock)
     chunk_gen: int = 0  # bumped by every chunk about to be sent: a timer armed before it does nothing
+    idle_watch: asyncio.Task | None = None  # idle-open: ends the request once the base buffered the next one
 
     @property
     def wire_id(self) -> str:
@@ -271,6 +275,7 @@ class NYOTTSExtension(AsyncTTS2BaseExtension):
         # request ids this extension already ended -> their reason; later chunks of them are ignored (bounded; a
         # tts_flush clears it, so an id reused after a flush is a new request)
         self._finished: OrderedDict[str, TTSAudioEndReason] = OrderedDict()
+        self._tts_busy = 0  # request_tts calls in progress: a chunk is arriving, no request is idle-open meanwhile
         self._prof_path = os.environ.get("NYO_TEN_PROFILE", "")
         self._prof: list[int] = []
 
@@ -697,6 +702,19 @@ class NYOTTSExtension(AsyncTTS2BaseExtension):
 
     # ------------------------------------------------------------ requests
     async def request_tts(self, t: TTSTextInput) -> None:
+        req = self._req
+        if req is not None and req.request_id == t.request_id:
+            self._cancel_idle_watch(req)  # a new chunk of the current request: it is not idle-open
+        self._tts_busy += 1
+        try:
+            await self._request_tts(t)
+        finally:
+            self._tts_busy -= 1
+        req = self._req
+        if req is not None and req.request_id == t.request_id:
+            await self._check_idle_open(req)
+
+    async def _request_tts(self, t: TTSTextInput) -> None:
         if self._stopped:
             self.ten_env.log_debug(f"TTS stopped, skipping request_id: {t.request_id}")
             return
@@ -768,6 +786,13 @@ class NYOTTSExtension(AsyncTTS2BaseExtension):
                     req.seg_ended = req.seg_text = False
                 assert self.client is not None
                 client = self.client
+                if not blank and t.text[:1].isspace() and req.sent_on is client and self._hard_cut_due(req):
+                    # hard cut BEFORE this chunk: a long segment with no cut point after its chunks (a price-only
+                    # comma chain "Bigas ₱52," " itlog ₱8," ...: a mark after a digit is never a cut) ends here; the
+                    # whitespace this chunk begins with is a word boundary ("₱1," + "250." has none: never cut)
+                    await self._end_segment(req, client, "segment_max_ms hard cut before a whitespace chunk")
+                    req.seg_no += 1
+                    req.seg_ended = req.seg_text = False
                 wire = req.wire_id
                 text = t.text  # verbatim: a sentence boundary is hinted later (boundary_hint_ms), never inside "3.50"
                 self.metrics_add_input_characters(len(t.text))
@@ -828,17 +853,29 @@ class NYOTTSExtension(AsyncTTS2BaseExtension):
             self._arm_segment(req)
             self._arm_hint(req, text)
 
-    def _segment_too_long(self, req: _Request, text: str) -> bool:
+    def _segment_age_ms(self, req: _Request) -> float | None:
+        """Age of the open segment for segment_max_ms, or None when the rule does not apply."""
         limit = self.config.segment_max_ms if self.config else 0
         if not (limit > 0 and req.open and req.seg_text and not req.seg_ended and req.seg_started is not None):
+            return None
+        return (time.monotonic() - req.seg_started) * 1000
+
+    def _hard_cut_due(self, req: _Request) -> bool:
+        """The open segment is older than segment_max_ms + HARD_CUT_EXTRA_MS: it may be cut without a sentence end."""
+        age_ms = self._segment_age_ms(req)
+        return age_ms is not None and age_ms >= self.config.segment_max_ms + HARD_CUT_EXTRA_MS
+
+    def _segment_too_long(self, req: _Request, text: str) -> bool:
+        age_ms = self._segment_age_ms(req)
+        if age_ms is None:
             return False
-        age_ms = (time.monotonic() - req.seg_started) * 1000
-        if age_ms >= limit and ends_sentence(text):
+        if age_ms >= self.config.segment_max_ms and ends_sentence(text):
             return True
         # no sentence end in time (a numbered list, a price at each sentence end, a long comma chain): past
         # segment_max_ms + HARD_CUT_EXTRA_MS cut at a clause mark, a list number or a newline, so SpeechT5 still
-        # ends its request before the gateway's stall timer (tts_stall_s, 10 s)
-        return age_ms >= limit + HARD_CUT_EXTRA_MS and hard_cut(text)
+        # ends its request before the gateway's stall timer (tts_stall_s, 10 s); a next chunk that begins with
+        # whitespace is cut before (request_tts)
+        return self._hard_cut_due(req) and hard_cut(text)
 
     async def _end_segment(self, req: _Request, client: NYOTTSClient, why: str) -> None:
         """end:true for the open segment (caller holds send_lock); the next chunk opens the next segment."""
@@ -885,6 +922,8 @@ class NYOTTSExtension(AsyncTTS2BaseExtension):
                 await self._finalize_request(self._final_reason(req))
             else:
                 self._start_watchdog(req)
+        else:
+            await self._check_idle_open(req)
 
     async def _handed_to_resend(self, req: _Request, client: NYOTTSClient) -> bool:
         """A send failed on a closing socket. If that close is an idle close the gateway announced (it never saw this
@@ -938,7 +977,80 @@ class NYOTTSExtension(AsyncTTS2BaseExtension):
         self._cancel_timers(req)
 
     @staticmethod
+    def _cancel_idle_watch(req: _Request) -> None:
+        t, req.idle_watch = req.idle_watch, None
+        if t is not None and not t.done() and t is not asyncio.current_task():
+            t.cancel()
+
+    def _next_request_pending(self, req: _Request) -> bool:
+        """The base class buffered a chunk of another request (tts2 _process_input_queue keeps it in
+        _pending_messages until finish_request of the current one)."""
+        pending = getattr(self, "_pending_messages", None) or {}
+        return any(rid != req.request_id for rid in list(pending))
+
+    def _chunk_queued(self, req: _Request) -> bool:
+        """A chunk of ``req`` is already in the base input queue (about to reach request_tts)."""
+        q = getattr(getattr(self, "input_queue", None), "_queue", None)
+        try:
+            return any(getattr(t, "request_id", None) == req.request_id for t in list(q or ()))
+        except Exception:  # noqa: BLE001  (a private deque: never let it break the request)
+            return False
+
+    @staticmethod
+    def _owes_nothing(req: _Request) -> bool:
+        """No text_input_end yet, every segment's audio_end arrived and no segment is open."""
+        return (req.open and not req.end_sent and not req.connecting and not req.unfinished()
+                and (not req.seg_text or req.seg_ended))
+
+    def _idle_open(self, req: _Request) -> bool:
+        """``req`` owes nothing and nothing can add to it right now: no chunk arriving or queued, no idle-close resend,
+        no timer acting. (A boundary hint / idle end still armed for a segment that already ended sends nothing: the
+        timers act only on an open segment, which _owes_nothing excludes.)"""
+        if self._stopped or self._fatal or self._req is not req or not self._owes_nothing(req):
+            return False
+        if self._tts_busy or req.resending or req.send_lock.locked() or req.firing:
+            return False
+        if req.resend_task is not None and not req.resend_task.done():
+            return False
+        return not self._chunk_queued(req)
+
+    def _idle_open_expired(self, req: _Request) -> bool:
+        """idle_open_end_ms (0 = off): the idle-open request got nothing (chunk, audio) for that long."""
+        ms = self.config.idle_open_end_ms if self.config else 0
+        return ms > 0 and (time.monotonic() - req.last_activity) * 1000 >= ms
+
+    async def _check_idle_open(self, req: _Request) -> None:
+        """A TEN request without text_input_end stays open after its segments were spoken (turn-detection graphs
+        reset it by flush). But once the base class holds the NEXT request, that one waits for our finish_request:
+        end this request now (REQUEST_END) so the next one runs. While it is idle-open and no next request is
+        buffered yet, a short-interval watcher checks again (cancelled by a new chunk, the end, a flush or stop)."""
+        if self._idle_open(req) and (self._next_request_pending(req) or self._idle_open_expired(req)):
+            why = ("the next request is waiting" if self._next_request_pending(req)
+                   else f"no chunk for {self.config.idle_open_end_ms} ms (idle_open_end_ms)")
+            self.ten_env.log_info(f"request {req.request_id}: every segment spoken, no text_input_end, and {why}; "
+                                  f"ending it", category=LOG_CATEGORY_KEY_POINT)
+            await self._finalize_request(self._final_reason(req))
+            return
+        if self._owes_nothing(req) and self._req is req and not self._stopped and (
+                req.idle_watch is None or req.idle_watch.done()):
+            req.idle_watch = self._spawn(self._watch_idle_open(req))
+
+    async def _watch_idle_open(self, req: _Request) -> None:
+        try:
+            while not self._stopped and self._req is req and self._owes_nothing(req):
+                await asyncio.sleep(IDLE_OPEN_POLL_S)
+                if self._idle_open(req) and (self._next_request_pending(req) or self._idle_open_expired(req)):
+                    await self._check_idle_open(req)
+                    return
+        except Exception as e:  # noqa: BLE001
+            self.ten_env.log_warn(f"NYO TTS: idle-open watcher of {req.request_id} failed: {e}")
+        finally:
+            if req.idle_watch is asyncio.current_task():
+                req.idle_watch = None
+
+    @staticmethod
     def _cancel_timers(req: _Request) -> None:
+        NYOTTSExtension._cancel_idle_watch(req)
         for name in ("seg_timer", "hint_timer"):
             t = getattr(req, name)
             setattr(req, name, None)
@@ -1409,6 +1521,7 @@ class NYOTTSExtension(AsyncTTS2BaseExtension):
         if req.unfinished() or (not req.end_sent and (rid != req.wire_id or ended_here)):
             # a segment of a request that goes on (the idle timer ended it; more text or text_input_end follows)
             self.ten_env.log_debug(f"request {tid}: segment {rid} spoken")
+            await self._check_idle_open(req)
             return
         await self._finalize_request(self._final_reason(req))
 

@@ -26,6 +26,9 @@ DEFAULT_BOUNDARY_HINT_MS = 250
 # A segment open this long is ended at the next chunk that ends a sentence (as above), so SpeechT5, which waits for
 # the end of its request, never stays silent past the gateway's stall timer (tts_stall_s, 10 s). 0 turns it off.
 DEFAULT_SEGMENT_MAX_MS = 6000
+# an idle-open TEN request (no text_input_end, every segment spoken) that gets no chunk for this long ends with
+# REQUEST_END; 0 = off (it stays open until the next request is buffered, a flush or stop)
+DEFAULT_IDLE_OPEN_END_MS = 0
 # Reconnect budget is time-based: retry (jittered backoff, capped) until the outage is older than this.
 DEFAULT_RECONNECT_WINDOW_MS = 120000
 RECONNECT_BACKOFF_CAP_S = 5.0

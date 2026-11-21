@@ -36,11 +36,27 @@ frames stream down. Full guide: `docs/ten.md` in nyo-serve.
   a list number at a line start (`\n2.`), or a newline, optionally followed by closing quotes/brackets. Chunks end only
   after punctuation, so this never cuts mid-word, and a mark right after a digit is never a cut: `₱3.50`, `₱1,250`,
   `₱1,234.50` and `10:30` stay whole (a chunk that only begins with digits, like `234.`, is not a list number).
+  Past the same age a chunk that BEGINS with whitespace is a cut point too: the segment is ended before that chunk
+  is sent, and the chunk opens the next segment. That covers a price-only comma chain (`Bigas ₱52,` ` itlog ₱8,`
+  ` gatas ₱95,` ...), where every mark follows a digit; parse_sentences keeps the whitespace at the start of the next
+  chunk, so `₱1,` + `250.` (no space) is never cut. The wire text stays exactly the TEN text (plus hint spaces).
   After (b) or (c) the next chunk of the same TEN request opens a new NRSP request `<request_id>~2`, `~3`, ... All
   segments are one TEN request: one `tts_audio_start`, one timeline (frame timestamps continue across segments),
   summed duration, TTFB from the first segment; `tts_audio_end` only on `text_input_end` (after the last segment's
-  `audio_end`), flush (cancels the playing segment; later chunks are dropped), `stale_request`, a FATAL, or stop.
-  Each of `boundary_hint_ms`, `segment_idle_ms`, `segment_max_ms` is off at `0`.
+  `audio_end`), flush (cancels the playing segment; later chunks are dropped), `stale_request`, a FATAL, stop, or
+  (d) below. Each of `boundary_hint_ms`, `segment_idle_ms`, `segment_max_ms` is off at `0`.
+  (d) **next request waiting**: a request without `text_input_end` stays open after all its segments were spoken
+  (turn-detection graphs reset it by flush). But the base class buffers the chunks of the NEXT request id until
+  `finish_request` of the current one, so once the request is idle-open (every segment's `audio_end` received, no
+  segment owed, no chunk arriving or queued in the base input queue, no resend or timer acting) AND another request id
+  is buffered, it ends with `tts_audio_end(REQUEST_END)` (normal duration and interval) and `finish_request`, which
+  releases the next request. A next request that arrives later is caught by a 50 ms watcher that runs while the
+  request is idle-open (cancelled by a new chunk of it, its end, a flush or stop). A request that still owes audio is
+  never ended this way. Later chunks of the ended request are late chunks (dropped). `idle_open_end_ms` (default `0`
+  = off) also ends an idle-open request after that long without a chunk, for graphs where neither a next request
+  nor a flush follows (the `tts_guarder` config `tests/configs/property_dump.json` sets 3000 for
+  `test_append_input_without_text_input_end`, whose last request would otherwise never end); keep it off when an LLM
+  may pause mid-reply (a tool call) under the same request id.
 * **A failed segment is not a failed reply.** A failure of one segment (any non-fatal error that names one of the
   request's segments: `admission_rejected`, `engine_error`, the engines' in-band `tts_engine_error`,
   `synthesis_truncated`, `text_too_long`, future engine codes; the gateway's own cancel `server_cancelled`; a lost
@@ -140,7 +156,8 @@ frames stream down. Full guide: `docs/ten.md` in nyo-serve.
 | `params.reconnect_window_ms` | `120000` | an outage longer than this ends in one FATAL `connect_failed`; shorter ones recover. |
 | `params.segment_idle_ms` | `1000` | no new chunk for this long and no `text_input_end`: `end:true` for the open NRSP request so its last sentence is spoken; the next chunk opens `<request_id>~<n>`. `0` = off (only for graphs that always send `text_input_end`). |
 | `params.boundary_hint_ms` | `250` | a chunk ending in `. ! ? …` (not after a digit, not before a closing quote) with no next chunk within this long gets one `" "` increment, so its sentence is spoken without waiting for the idle end. `0` = off. |
-| `params.segment_max_ms` | `6000` | a segment open this long ends after the next sentence-final chunk (not after a digit); 2000 ms later also after a `, ; :` / list-number / newline chunk (hard cut): keeps SpeechT5 under the gateway's 10 s stall timer on long fast replies. `0` = off. |
+| `params.segment_max_ms` | `6000` | a segment open this long ends after the next sentence-final chunk (not after a digit); 2000 ms later also after a `, ; :` / list-number / newline chunk, or before a chunk that begins with whitespace (hard cut): keeps SpeechT5 under the gateway's 10 s stall timer on long fast replies. `0` = off. |
+| `params.idle_open_end_ms` | `0` | a request without `text_input_end` whose segments are all spoken and that gets no chunk for this long ends with `REQUEST_END`; later chunks of it are dropped. `0` = off: it stays open until the next request is buffered (then it ends at once), a flush or stop. |
 | `params.enable_words` | `false` | NRSP `alignment` -> `tts_text_result` (subtitles). |
 | `params.gc_freeze` | `false` | opt-in. `true` runs `gc.collect(); gc.freeze()` at the end of `on_init`, removing gen-2 GC passes over the TEN + pydantic init-time heap from the audio path (measured in a TEN host: max per-frame cost 4067 us -> 125 us, bench/results/ten.json). It is process-wide: it also freezes the init-time heap of every other extension in the same host, so enable it only for a host you own. |
 | `dump`, `dump_path` | `false`, `/tmp` | per-request PCM `nyo_dump_<request_id>.pcm`. |

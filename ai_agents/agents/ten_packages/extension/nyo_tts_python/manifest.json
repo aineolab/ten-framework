@@ -80,6 +80,9 @@
             "boundary_hint_ms": {
               "type": "int32"
             },
+            "idle_open_end_ms": {
+              "type": "int32"
+            },
             "enable_words": {
               "type": "bool"
             },
