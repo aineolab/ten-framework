@@ -241,8 +241,10 @@ def test_preflight_checks_kind_and_language():
     assert code == "language_not_supported" and "'en'" in msg and "fil" in msg
     code, msg = transport.check_model(entries, "halohalo/tts-fil", "asr", "fil", "ws://127.0.0.1:9200")
     assert code == "model_not_found" and "tts model" in msg and "halohalo/tts-fil" not in msg.split("asr models:")[1]
-    code, msg = transport.check_model(entries, "fw/x", "tts", None, "ws://127.0.0.1:9200")
+    code, msg = transport.check_model(entries, "halohalo/tts-xx", "tts", None, "ws://127.0.0.1:9200")
     assert code == "model_not_found" and msg.endswith("tts models: halohalo/tts-fil")
+    # QA r2 rule A: an id in a namespace the listing does not show (engine swapping) is not conclusive
+    assert transport.check_model(entries, "fw/x", "tts", None, "ws://127.0.0.1:9200") is None
 
 
 def test_unsupported_language_is_fatal_at_start():

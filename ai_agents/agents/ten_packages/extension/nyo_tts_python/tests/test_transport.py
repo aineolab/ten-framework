@@ -12,6 +12,7 @@ from nyo_tts_python.tts_client import NYOTTSConnectError
 from .helpers import make_config, make_extension, run, text_input, wait_for
 
 FATAL = int(ModuleErrorCode.FATAL_ERROR.value)
+NON_FATAL = int(ModuleErrorCode.NON_FATAL_ERROR.value)
 
 
 @contextlib.asynccontextmanager
@@ -102,16 +103,43 @@ def test_tls_verify_false_accepts_a_self_signed_cert():
     run(go())
 
 
-def test_unlisted_model_is_fatal_model_not_found():
+def test_unlisted_model_is_non_fatal_then_fatal_model_not_found_after_the_window():
+    """Rule A': the gateway lists only ready engines, so a missing model may be an engine that is down."""
     async def go():
         async with FakeNRSPServer(models=[{"id": "halohalo/tts-fil"}]) as srv:
-            ext, rec = make_extension(srv.url, model="halohalo/tts-ceb")
+            ext, rec = make_extension(srv.url, model="halohalo/tts-ceb", reconnect_window_ms=600)
+            ext._reconnect_delay = lambda attempt: 0.05
             e = await _connect_expect_fatal(ext)
-            assert e.code == "model_not_found" and ext._fatal
+            assert e.code == "model_not_found" and not ext._fatal
             err = rec.of("error")[0]["error"]
-            assert err.code == FATAL and err.vendor_info.code == "model_not_found"
+            assert err.code == NON_FATAL and err.vendor_info.code == "model_not_found"
             assert "halohalo/tts-fil" in err.vendor_info.message  # lists what is available
-            assert len(srv.connections) == 0
+            await ext._begin_request(text_input("r", "x"))      # a request waits (idle is not FATAL, QA r4)
+            ext._schedule_reconnect()
+            await wait_for(lambda: ext._fatal, timeout=4, what="FATAL after the window")
+            codes = [(int(x["error"].code), x["error"].vendor_info.code) for x in rec.of("error")]
+            assert codes == [(NON_FATAL, "model_not_found"), (FATAL, "model_not_found")]  # rate-limited
+            assert len(srv.connections) == 0 and srv.models_requests > 2
+
+    run(go())
+
+
+def test_model_that_comes_back_inside_the_window_recovers():
+    async def go():
+        async with FakeNRSPServer(models=[{"id": "halohalo/tts-fil", "kind": "tts"}]) as srv:
+            ext, rec = make_extension(srv.url, model="halohalo/tts-hil")
+            ext._reconnect_delay = lambda attempt: 0.05
+            with pytest.raises(NYOTTSConnectError):
+                await ext._ensure_connected()
+            ext._schedule_reconnect()
+            srv.models = [{"id": "halohalo/tts-fil", "kind": "tts"}, {"id": "halohalo/tts-hil", "kind": "tts"}]
+            await wait_for(lambda: ext.client is not None and ext.client.is_connected(), timeout=4)
+            assert not ext._fatal and ext._preflight_ok
+            await ext.request_tts(text_input("r", "maayong aga", end=True))
+            await wait_for(lambda: rec.of("audio_end"))
+            assert rec.of("audio_end")[0]["reason"].name == "REQUEST_END"
+            ext._stopped = True
+            await ext.client.stop()
 
     run(go())
 
@@ -177,17 +205,21 @@ def test_reconnect_loop_ends_in_exactly_one_fatal():
     from ten_ai_base.message import TTSAudioEndReason
 
     async def go():
-        ext, rec = make_extension("ws://127.0.0.1:1")          # nothing listens: every attempt is refused
-        ext._reconnect_delay = lambda attempt: 0.0
+        import time
+        ext, rec = make_extension("ws://127.0.0.1:1", reconnect_window_ms=400)  # nothing listens: refused
+        ext._reconnect_delay = lambda attempt: 0.01
+        await ext._begin_request(text_input("r0", "x"))          # a request waits (idle is not FATAL, QA r4)
+        t0 = time.monotonic()
         ext._schedule_reconnect()
-        await wait_for(lambda: rec.of("error"), timeout=20, what="fatal after the last attempt")
+        await wait_for(lambda: rec.of("error"), timeout=20, what="fatal after the window")
+        assert time.monotonic() - t0 >= 0.39                   # time-based budget, not an attempt count
         await wait_for(lambda: ext._reconnect_task is None, what="loop end")
         errors = rec.of("error")
         assert len(errors) == 1
         err = errors[0]["error"]
         assert int(err.code) == int(ModuleErrorCode.FATAL_ERROR.value)
         assert err.vendor_info.vendor == "nyo" and err.vendor_info.code == "connect_failed"
-        assert "5 reconnect attempts failed" in err.message
+        assert "for more than 0.4 s" in err.message
         assert ext._fatal
         ext._schedule_reconnect()                                # no new loop after the FATAL
         assert ext._reconnect_task is None
@@ -218,14 +250,14 @@ def test_request_during_the_last_reconnect_attempt_still_gives_one_fatal():
     from ten_ai_base.message import TTSAudioEndReason
 
     async def go():
-        ext, rec = make_extension("ws://127.0.0.1:1")
-        ext._reconnect_delay = lambda attempt: 0.0
+        ext, rec = make_extension("ws://127.0.0.1:1", reconnect_window_ms=300)
+        ext._reconnect_delay = lambda attempt: 0.01
         real_connect, calls = ext._connect, []
         req_task = []
 
         async def connect():
             calls.append(1)
-            if len(calls) == 5 and not req_task:                  # the loop's last attempt
+            if len(calls) == 3 and not req_task:                  # a request arrives mid-outage
                 req_task.append(asyncio.create_task(ext.request_tts(text_input("mid", "kumusta", end=True))))
                 await asyncio.sleep(0.05)                          # the request's own connect runs meanwhile
             await real_connect()

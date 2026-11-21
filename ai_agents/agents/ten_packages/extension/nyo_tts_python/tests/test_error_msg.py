@@ -59,10 +59,10 @@ def test_request_scoped_server_error_finishes_request_with_vendor_info():
             await ext._ensure_connected()
             await ext.request_tts(text_input("r", "please ERROR_TRIGGER now", end=True))
             await wait_for(lambda: "finish" in rec.names())
-            fin = rec.of("finish")[0]
-            assert fin["error"].code == NON_FATAL
-            assert fin["error"].vendor_info.code == "engine_error"
-            assert rec.of("audio_end")[0]["reason"] == TTSAudioEndReason.ERROR
+            err = rec.of("error")[0]["error"]  # reported for the failed segment (round 8)
+            assert err.code == NON_FATAL and rec.of("error")[0]["request_id"] == "r"
+            assert err.vendor_info.code == "engine_error"
+            assert rec.of("audio_end")[0]["reason"] == TTSAudioEndReason.ERROR  # no audio at all
             assert ext._fatal is False
             # connection survives and the next request works
             rec.events.clear()
@@ -92,15 +92,20 @@ def test_connection_lost_mid_request_errors_the_request_and_reconnects_lazily():
             await ext.request_tts(text_input("r", "x" * 100))
             await wait_for(lambda: "audio" in rec.names())
             ext.client.websocket.transport.abort()  # yank the cable
-            await wait_for(lambda: "finish" in rec.names(), what="request failed")
-            fin = rec.of("finish")[0]
-            assert fin["error"].vendor_info.code == "connection_lost"
-            assert fin["error"].code == NON_FATAL
+            await wait_for(lambda: rec.of("error"), what="segment lost")
+            err = rec.of("error")[0]["error"]
+            assert err.vendor_info.code == "connection_lost" and err.code == NON_FATAL
+            # round 8: the segment is lost, the TEN request goes on; its next chunk reconnects
+            assert ext._req.open and not rec.of("audio_end")
+            await ext.request_tts(text_input("r", " tapos", end=True))
+            await wait_for(lambda: "finish" in rec.names(), what="r ended")
+            assert rec.of("audio_end")[0]["reason"] == TTSAudioEndReason.REQUEST_END  # it produced audio
+            assert len(srv.connections) == 2
             rec.events.clear()
             await ext.request_tts(text_input("r2", "again", end=True))  # lazy reconnect inside
             await wait_for(lambda: "finish" in rec.names())
             assert rec.of("audio_end")[0]["reason"] == TTSAudioEndReason.REQUEST_END
-            assert len(srv.connections) == 2
+            assert len(srv.connections) == 2  # the same reconnected socket
 
     run(go())
 

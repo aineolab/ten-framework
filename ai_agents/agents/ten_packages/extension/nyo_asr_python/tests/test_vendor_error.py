@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from unittest.mock import AsyncMock
 from nyo_asr_python.extension import NYOASRExtension
 
 from .helpers import make_extension, run
@@ -50,12 +51,19 @@ def test_fatal_status_set():
     assert not ext._is_fatal_status(503) and not ext._is_fatal_status(None)
 
 
-def test_404_and_400_are_retried_then_fatal_after_three_in_a_row():
+def test_404_and_400_are_fatal_only_when_models_conclusively_miss_the_model():
+    """QA r2 rule B: a 400/404 handshake re-checks GET /v1/models; FATAL only on a conclusive miss."""
+    from nyo_asr_python.recognition import NRSPConnectError
+    for verdict, fatal in (("inconclusive", False), ("ok", False), ("bad", True), ("auth", True)):
+        ext = make_extension()
+        ext._models_verdict = AsyncMock(return_value=(verdict, "model_not_found", "not served"))
+        for _ in range(5):
+            got, _, _ = run(ext._classify_connect_failure(NRSPConnectError("404", 404)))
+            assert got is fatal
     ext = make_extension()
-    assert [ext._is_fatal_status(404), ext._is_fatal_status(404), ext._is_fatal_status(404)] == [False, False, True]
-    ext = make_extension()
-    ext._is_fatal_status(400); ext._is_fatal_status(404)
-    assert ext._is_fatal_status(503) is False and ext._soft_4xx == 0  # any other outcome resets the streak
+    ext._models_verdict = AsyncMock()
+    assert run(ext._classify_connect_failure(NRSPConnectError("503", 503)))[0] is False
+    ext._models_verdict.assert_not_awaited()  # only 400/404 re-check the listing
 
 
 def test_invalid_config_emits_fatal_with_vendor_info():

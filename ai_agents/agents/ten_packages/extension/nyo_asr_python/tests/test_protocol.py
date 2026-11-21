@@ -91,13 +91,16 @@ def test_interims_then_final_then_finalize_end_in_that_order():
     run(go())
 
 
-def test_finalize_without_speech_returns_finalize_end_only():
+def test_finalize_without_speech_returns_one_empty_final_then_finalize_end():
+    # the fake server answers a finalize after no speech with finalize_end alone (spec-legal); TEN still gets one
+    # final for its asr_finalize (empty), then asr_finalize_end, as with the gateway's asr_fw engine
     async def go():
         async with session() as (srv, ext):
             await ext.start_connection()
             ext.finalize_id = "f0"
             await ext.finalize("s")
-            assert ext.order == [("finalize_end", None)]
+            assert ext.order == [("result", True), ("finalize_end", None)]
+            assert ext.send_asr_result.await_args_list[-1].args[0].text == ""
 
     run(go())
 
@@ -131,15 +134,21 @@ def test_bad_key_is_fatal_401_and_never_retries():
     run(go())
 
 
-def test_unknown_model_is_fatal_at_start_via_v1_models():
+def test_unknown_model_is_retried_then_fatal_model_not_found():
+    """Rule A': a model /v1/models does not list may be an engine that is down: one NON_FATAL
+    model_not_found, retries inside the reconnect budget, then one FATAL model_not_found."""
     async def go():
         async with session(model="halohalo/asr-xyz", language="xyz") as (srv, ext):
             await ext.start_connection()
-            err, vi = ext.send_asr_error.await_args.args
-            assert err.code == -1000 and vi.code == "model_not_found" and vi.vendor == "nyo"
+            err, vi = ext.send_asr_error.await_args_list[0].args
+            assert err.code == 1000 and vi.code == "model_not_found" and vi.vendor == "nyo"
             assert "halohalo/asr-xyz" in vi.message and "/v1/models" in vi.message
-            assert ext._fatal and srv.models_requests == 1
-            assert len(srv.connections) == 0  # failed before any websocket
+            assert not ext._fatal
+            await wait_for(lambda: ext._reconnect_task is None, what="reconnect loop end")
+            codes = [(c.args[0].code, c.args[1].code) for c in ext.send_asr_error.await_args_list]
+            assert codes[-1] == (-1000, "model_not_found") and ext._fatal
+            assert [c for c, _ in codes].count(-1000) == 1 and all(v == "model_not_found" for _, v in codes)
+            assert srv.models_requests > 1  # checked again on every attempt
 
     run(go())
 
@@ -160,14 +169,17 @@ def test_fatal_midstream_error_stops_reconnect():
 
 
 def test_connection_refused_retries_with_backoff_then_gives_up():
+    """Time-based budget: retries until the outage outlasts the window, then one FATAL. NON_FATAL
+    connect errors are rate-limited: the first failure of the outage is reported, the rest are not."""
     async def go():
         ext = make_extension(base_url="ws://127.0.0.1:1", api_key="k")
         ext._emit_connection_transition = AsyncMock()
-        ext.reconnect_manager = ReconnectManager(base_delay=0.01, max_delay=0.02, max_attempts=3)
+        ext.reconnect_manager = ReconnectManager(base_delay=0.01, max_delay=0.02, window_ms=300)
         await ext.start_connection()
         await wait_for(lambda: ext._reconnect_task is None, what="reconnect loop end")
         codes = [c.args[0].code for c in ext.send_asr_error.await_args_list]
-        assert codes[0] == 1000 and codes[-1] == -1000 and codes.count(1000) >= 3
+        assert codes == [1000, -1000] and ext._fatal
+        assert ext.reconnect_manager.attempts >= 3  # it kept trying for the whole window
 
     run(go())
 
@@ -226,14 +238,16 @@ def test_socket_drop_during_finalize_gives_one_final_and_keeps_the_next_turn():
             ext.finalize_id = "fin-a"
             await ext.finalize("s")                              # socket aborts instead of answering
             finals = [c.args[0] for c in ext.send_asr_result.await_args_list if c.args[0].final]
-            assert len(finals) == 1 and finals[0].metadata["asr_info"]["promoted_on_timeout"] is True
+            info = finals[0].metadata["asr_info"] if finals else {}
+            # whichever of the close and the woken finalize promotes it, a close is a close (promoted_on_close)
+            assert len(finals) == 1 and info.get("promoted_on_close") and not info.get("promoted_on_timeout"), finals
             await wait_for(lambda: len(srv.connections) == 2 and ext.is_connected(), what="reconnect")
             for _ in range(20):
                 await ext.send_audio(Frame(), "s")
             ext.finalize_id = "fin-b"
             await ext.finalize("s")
             finals = [c.args[0] for c in ext.send_asr_result.await_args_list if c.args[0].final]
-            assert len(finals) == 2 and "promoted_on_timeout" not in finals[1].metadata["asr_info"]
+            assert len(finals) == 2 and not {"promoted_on_timeout", "promoted_on_close"} & set(finals[1].metadata["asr_info"])
             assert ext.send_asr_finalize_end.await_count == 2
 
     run(go())

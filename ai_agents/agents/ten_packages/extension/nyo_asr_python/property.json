@@ -1,17 +1,16 @@
 {
   "dump": false,
   "dump_path": "/tmp",
-  "finalize_timeout_ms": 2000,
   "params": {
     "api_key": "${env:NYO_API_KEY|}",
     "base_url": "${env:NYO_BASE_URL|}",
-    "model": "halohalo/asr-fil",
-    "language": "fil",
+    "model": "",
+    "language": "",
     "sample_rate": 16000,
-    "interim_results": true,
     "endpointing_ms": 1000,
     "allow_insecure": false,
     "tls_verify": true,
-    "buffer_ms": 2000
+    "buffer_ms": 2000,
+    "reconnect_window_ms": 120000
   }
 }

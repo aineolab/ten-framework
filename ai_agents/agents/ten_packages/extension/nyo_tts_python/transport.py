@@ -147,21 +147,50 @@ async def fetch_models(
     return [m for m in data if isinstance(m, dict) and "id" in m]
 
 
+def model_languages(entry: dict) -> list[str]:
+    """Languages a /v1/models entry serves: its `languages` list and/or its single `language` string."""
+    langs = entry.get("languages")
+    out = [str(x) for x in langs] if isinstance(langs, list) else []
+    one = entry.get("language")
+    if isinstance(one, str) and one and one not in out:
+        out.append(one)
+    return out
+
+
+def _namespace(model_id: str) -> str:
+    return model_id.split("/", 1)[0] if "/" in model_id else ""
+
+
+def lists_kind(entries: list[dict], kind: str, model: str | None = None) -> bool:
+    """True when the listing can prove `model` missing: it names at least one model of this kind (entries
+    without a kind count) and, when `model` has an `<namespace>/` prefix, one in that namespace. An ASR
+    engine swap drops every halohalo/ and fw/ id while nvidia/nemotron-... stays listed, so a kind-only
+    test would read a swap as "model not served"."""
+    ns = _namespace(model or "")
+    return any(e.get("kind") in (None, kind) and (not ns or _namespace(str(e["id"])) == ns) for e in entries)
+
+
 def check_model(entries: list[dict], model: str, kind: str, language: str | None,
                 base_url: str) -> tuple[str, str] | None:
-    """Match the configured model against GET /v1/models entries. None if usable, else (code, message).
+    """Match the configured model against GET /v1/models entries. None if usable or not conclusive, else (code, message).
 
-    Checks the id, the entry's `kind` (asr/tts, when listed) and, when the entry lists `languages`, the
-    configured language. The message names the ids of the right kind, so a user can pick one.
+    A missing id is conclusive only when the listing names at least one model of the same kind and id
+    namespace (lists_kind): a gateway that is swapping, booting or has lost that engine lists none, and the
+    absence proves nothing (callers use lists_kind() to tell "usable" from "inconclusive"). Checks the
+    entry's `kind` (asr/tts, when listed) and, when the entry lists languages (`languages` list or
+    `language` string), the configured language.
+    The message names the ids of the right kind, so a user can pick one.
     """
     where = f"{http_base(base_url)}/v1/models"
     same_kind = sorted(e["id"] for e in entries if e.get("kind") in (None, kind))
     entry = next((e for e in entries if e["id"] == model), None)
+    if entry is None and not lists_kind(entries, kind, model):
+        return None
     if entry is None or entry.get("kind") not in (None, kind):
         what = "is not served" if entry is None else f"is a {entry.get('kind')} model, not {kind}"
         return "model_not_found", f"{kind} model {model!r} {what} by {where}; {kind} models: {', '.join(same_kind)}"
-    langs = entry.get("languages")
-    if language and isinstance(langs, list) and langs and language not in langs:
+    langs = model_languages(entry)
+    if language and langs and language not in langs:
         return ("language_not_supported",
-                f"model {model!r} does not serve language {language!r} (it lists {', '.join(map(str, langs))})")
+                f"model {model!r} does not serve language {language!r} (it lists {', '.join(langs)})")
     return None

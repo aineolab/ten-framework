@@ -50,6 +50,37 @@ def test_empty_text_is_dropped():
     ext.send_asr_result.assert_not_awaited()
 
 
+def test_empty_interim_is_dropped_even_with_an_open_finalize():
+    ext = _ext()
+    ext._open_finalizes = ["f1"]
+    run(ext._emit_asr_result({"text": ""}, final=False))
+    ext.send_asr_result.assert_not_awaited()
+
+
+def test_empty_final_answering_an_open_finalize_is_forwarded():
+    # Silence before asr_finalize: the engine's final is empty. The caller still gets a final for its
+    # finalize (closes the turn), as Deepgram does; downstream agents ignore empty text.
+    ext = _ext()
+    ext._open_finalizes = ["f1"]
+    run(ext._emit_asr_result({"text": "", "metadata": {"finalize_id": "f1"}}, final=True))
+    r = ext.send_asr_result.await_args.args[0]
+    assert (r.text, r.final) == ("", True)
+
+
+def test_empty_final_without_finalize_id_answers_the_open_finalize():
+    ext = _ext()
+    ext._open_finalizes = ["f1"]
+    run(ext._emit_asr_result({"text": ""}, final=True))
+    assert ext.send_asr_result.await_args.args[0].final is True
+
+
+def test_empty_endpoint_final_for_another_finalize_is_dropped():
+    ext = _ext()
+    ext._open_finalizes = ["f1"]
+    run(ext._emit_asr_result({"text": "", "metadata": {"finalize_id": "auto-3"}}, final=True))
+    ext.send_asr_result.assert_not_awaited()
+
+
 def test_backend_sticky_when_server_omits_it():
     ext = _ext()
 

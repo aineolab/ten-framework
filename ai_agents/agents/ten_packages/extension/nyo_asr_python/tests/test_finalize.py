@@ -1,4 +1,6 @@
 import asyncio
+
+import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from .helpers import make_extension, run
@@ -35,7 +37,7 @@ def test_finalize_timeout_promotes_last_interim_then_emits_end():
         ext._emit_asr_result = AsyncMock()
         await ext.finalize("s")
         args, kw = ext._emit_asr_result.await_args
-        assert args[0]["text"] == "partial words" and kw["final"] is True and kw["promoted"] is True
+        assert args[0]["text"] == "partial words" and kw["final"] is True and kw["promoted"] == "timeout"
         assert ext._last_interim is None
         ext.send_asr_finalize_end.assert_awaited_once()
 
@@ -71,7 +73,8 @@ def test_finalize_cancelled_still_emits_end():
         ext = make_extension()
         rec = _connected(ext)
         rec.wait_finalize_end.side_effect = asyncio.CancelledError()
-        await ext.finalize("s")
+        with pytest.raises(asyncio.CancelledError):  # cancellation propagates (QA r2 N5)
+            await ext.finalize("s")
         ext.send_asr_finalize_end.assert_awaited_once()
 
     run(go())

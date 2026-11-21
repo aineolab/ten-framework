@@ -158,7 +158,7 @@ def test_vendor_metadata_masks_the_key_at_source():
     assert "super-secret-key" not in ext.vendor_metadata()["key"]
 
 
-def test_gc_freeze_param_defaults_on_and_can_be_disabled():
+def test_gc_freeze_param_is_opt_in():
     from .helpers import make_config
-    assert make_config().gc_freeze is True
-    assert make_config(gc_freeze=False).gc_freeze is False
+    assert make_config().gc_freeze is False
+    assert make_config(gc_freeze=True).gc_freeze is True

@@ -9,10 +9,21 @@ from ten_ai_base import utils
 from . import transport
 from .const import (
     DEFAULT_BASE_URL,
+    DEFAULT_RECONNECT_WINDOW_MS,
     DEFAULT_REQUEST_TIMEOUT_MS,
+    DEFAULT_BOUNDARY_HINT_MS,
     DEFAULT_SAMPLE_RATE,
+    DEFAULT_SEGMENT_IDLE_MS,
+    DEFAULT_SEGMENT_MAX_MS,
+    DEFAULT_IDLE_OPEN_END_MS,
     VALID_SAMPLE_RATES,
 )
+
+
+def language_from_model(model: str) -> str:
+    """The language the gateway routes ``halohalo/tts-<lang>`` to when no ``language`` is given; else ""."""
+    prefix = "halohalo/tts-"
+    return model[len(prefix):] if isinstance(model, str) and model.startswith(prefix) else ""
 
 
 _PARAM_FIELDS = (
@@ -25,6 +36,11 @@ _PARAM_FIELDS = (
     "language",
     "sample_rate",
     "request_timeout_ms",
+    "reconnect_window_ms",
+    "segment_idle_ms",
+    "segment_max_ms",
+    "boundary_hint_ms",
+    "idle_open_end_ms",
     "enable_words",
     "gc_freeze",
 )
@@ -41,8 +57,19 @@ class NYOTTSConfig(BaseModel):
     # Fallback only; the server's audio_start is authoritative.
     sample_rate: int = DEFAULT_SAMPLE_RATE
     request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS
+    # FATAL connect_failed only once the gateway has been unreachable for longer than this.
+    reconnect_window_ms: int = DEFAULT_RECONNECT_WINDOW_MS
+    # no new chunk for this long and no text_input_end: end:true for the open NRSP request (0 = never)
+    segment_idle_ms: int = DEFAULT_SEGMENT_IDLE_MS
+    # a segment open this long ends at the next sentence-final chunk (0 = never)
+    segment_max_ms: int = DEFAULT_SEGMENT_MAX_MS
+    # a sentence-final chunk not followed by another within this long gets one " " increment (0 = never)
+    boundary_hint_ms: int = DEFAULT_BOUNDARY_HINT_MS
+    # an idle-open request (no text_input_end, all segments spoken) with no chunk for this long ends (0 = never)
+    idle_open_end_ms: int = DEFAULT_IDLE_OPEN_END_MS
     enable_words: bool = False
-    gc_freeze: bool = True
+    # Opt-in: gc.freeze() is process-wide (it affects every extension in the host).
+    gc_freeze: bool = False
 
     dump: bool = False
     dump_path: str = "/tmp"
@@ -54,10 +81,16 @@ class NYOTTSConfig(BaseModel):
         for name in _PARAM_FIELDS:
             if name in params:
                 setattr(self, name, params.pop(name))
-        if not self.language and self.model.startswith("halohalo/tts-"):
-            self.language = self.model.rsplit("-", 1)[-1]
+        for name in ("voice", "language"):
+            if getattr(self, name) is None:
+                setattr(self, name, "")
+        if not self.language:
+            self.language = language_from_model(self.model)
 
     def validate_config(self) -> None:
+        for name in ("model", "voice", "language"):
+            if not isinstance(getattr(self, name), str):
+                raise ValueError(f"{name} must be a string")
         if not str(self.base_url or "").strip():
             raise ValueError("base_url is required")
         if not str(self.api_key or "").strip():
@@ -67,8 +100,14 @@ class NYOTTSConfig(BaseModel):
             raise ValueError(f"model must look like 'vendor/name': {self.model!r}")
         if self.sample_rate not in VALID_SAMPLE_RATES:
             raise ValueError(f"Unsupported sample_rate: {self.sample_rate}")
-        if self.request_timeout_ms <= 0:
-            raise ValueError("request_timeout_ms must be > 0")
+        for name in ("request_timeout_ms", "reconnect_window_ms"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        for name in ("segment_idle_ms", "segment_max_ms", "boundary_hint_ms", "idle_open_end_ms"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ValueError(f"{name} must be a non-negative integer (0 = off)")
 
     def to_str(self, sensitive_handling: bool = True) -> str:
         if not sensitive_handling:

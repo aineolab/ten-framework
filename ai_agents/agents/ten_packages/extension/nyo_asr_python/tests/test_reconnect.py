@@ -24,7 +24,7 @@ def test_backoff_doubles_and_caps(monkeypatch):
         assert not mgr.can_retry()
 
     run(go())
-    expected = [0.5, 1.0, 2.0, 4.0, 4.0, 4.0]
+    expected = [0.5, 1.0, 2.0, 4.0, 5.0, 5.0]
     assert all(e / 2 <= got <= e for got, e in zip(sleeps, expected)) and len(sleeps) == 6
 
 
@@ -95,6 +95,9 @@ def test_on_open_resets_server_timeline_and_replays_buffer():
         await ext.on_open()
         assert ext.sent_user_audio_duration_ms_before_last_reset == 1200
         ext.audio_timeline.reset.assert_called_once()
+        # QA r2 rule C: an open alone does not end the outage; a result (or 10 s up) does
+        assert ext.reconnect_manager.attempts == 3
+        ext.reconnect_manager.mark_stable()
         assert ext.reconnect_manager.attempts == 0
         ext.on_connected.assert_awaited_once()
         ext.send_connect_delay_metrics.assert_awaited_once()
