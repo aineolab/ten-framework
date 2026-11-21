@@ -183,3 +183,18 @@ def test_final_review_nemotron_default_applies_after_apply_defaults():
                                         "base_url": "ws://127.0.0.1:9", "language": "fil"}})
     cfg2.apply_defaults()
     assert cfg2.finalize_timeout_user_set is True and cfg2.finalize_timeout_ms == 1234
+
+
+def test_final_check_finalize_end_without_final_or_interim_emits_one_empty_final():
+    # A spec-legal server may answer a finalize after silence with finalize_end alone (the fake server does; the
+    # gateway's asr_fw engine sends an empty final first). TEN still gets exactly one final for the asr_finalize.
+    ext = make_extension()
+
+    async def go():
+        ext._open_finalizes.append("f9")
+        ext._fin_snap["f9"] = (None, 1234)
+        await ext._emit_empty_final("f9")
+
+    run(go())
+    finals = [c.args[0] for c in ext.send_asr_result.await_args_list if c.args[0].final]
+    assert len(finals) == 1 and finals[0].text == ""

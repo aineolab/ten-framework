@@ -218,11 +218,12 @@ def test_finalize_end_without_final_promotes_last_interim_once():
         assert [f.text for f in finals] == ["kumusta"] and finals[0].metadata["asr_info"]["promoted_on_timeout"]
         assert ext._last_interim is None
         ext.finalize_id = "f2"
-        await ext.finalize("s")  # nothing left to promote
-        assert len([c for c in ext.send_asr_result.await_args_list if c.args[0].final]) == 1
+        await ext.finalize("s")  # nothing left to promote: one empty final answers f2
+        finals = [c.args[0] for c in ext.send_asr_result.await_args_list if c.args[0].final]
+        assert [f.text for f in finals] == ["kumusta", ""]
         # the replayed engine's late final for the promoted turn is dropped
         await ext.on_result({"id": "r1-utt-0", "text": "kumusta po", "final": True, "start_ms": 0})
-        assert len([c for c in ext.send_asr_result.await_args_list if c.args[0].final]) == 1
+        assert len([c for c in ext.send_asr_result.await_args_list if c.args[0].final]) == 2
         assert ext.send_asr_finalize_end.await_count == 2
 
     run(go())

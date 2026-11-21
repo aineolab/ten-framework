@@ -880,7 +880,8 @@ class NYOASRExtension(AsyncASRBaseExtension, NYOASRRecognitionCallback):
             elif self._fin_finals.get(fid, 0) == 0:
                 # finalize_end without a final (gateway engine lost/reopened, or its own finalize
                 # timeout): the last interim is all this turn has; promote it once.
-                await self._promote_last_interim(fid, rec, "finalize_end without a final")
+                if not await self._promote_last_interim(fid, rec, "finalize_end without a final"):
+                    await self._emit_empty_final(fid)
             elif self._fin_ttlw_ms is not None and not self._fin_server_ttlw:
                 await self.send_vendor_metrics({"client_ttlw_ms": self._fin_ttlw_ms})
         except asyncio.CancelledError:
@@ -954,7 +955,7 @@ class NYOASRExtension(AsyncASRBaseExtension, NYOASRRecognitionCallback):
                 del self._interims[k]
         return pending
 
-    async def _promote_last_interim(self, fid: str | None, rec, why: str, on_close: bool = False) -> None:
+    async def _promote_last_interim(self, fid: str | None, rec, why: str, on_close: bool = False) -> bool:
         """Emit this turn's last interim as its final (once: it is removed) and arm late-final suppression.
 
         fid None: the socket closed unexpectedly (on_close): every turn still pending dies with it and is promoted,
@@ -968,7 +969,7 @@ class NYOASRExtension(AsyncASRBaseExtension, NYOASRRecognitionCallback):
                 if p.get("text"):
                     self.ten_env.log_info(f"promoting last interim ({why})")
                     await self._emit_asr_result(p, final=True, promoted="close")
-            return
+            return bool(taken)
         pending = self._take_interim(fid)
         if pending and pending.get("text"):
             self.ten_env.log_info(f"asr_finalize {fid}: promoting last interim ({why})" if fid is not None
@@ -989,6 +990,16 @@ class NYOASRExtension(AsyncASRBaseExtension, NYOASRRecognitionCallback):
                     "gateway session: it never re-decodes audio sent on this one)"
                 )
             await self._emit_asr_result(pending, final=True, promoted="close" if on_close else "timeout")
+            return True
+        return False
+
+    async def _emit_empty_final(self, fid: str) -> None:
+        """The final for an asr_finalize the server ended with no final and no interim to promote (silence before
+        the finalize; the gateway's asr_fw engine sends such an empty final itself, other spec-legal servers
+        may not): TEN gets one final per asr_finalize either way, as with Deepgram. Downstream ignores empty text."""
+        point_ms = (self._fin_snap.get(fid) or (None, 0))[1]  # where the finalize cut the audio
+        await self._emit_asr_result({"text": "", "start_ms": max(0, int(point_ms)), "duration_ms": 0,
+                                     "metadata": {"finalize_id": fid}}, final=True)
 
     async def _finalize_end(self, fid: str) -> None:
         """asr_finalize_end for fid, exactly once (send_asr_finalize_end reads self.finalize_id)."""

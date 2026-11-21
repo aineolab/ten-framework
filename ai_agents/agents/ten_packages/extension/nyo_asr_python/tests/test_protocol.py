@@ -91,13 +91,16 @@ def test_interims_then_final_then_finalize_end_in_that_order():
     run(go())
 
 
-def test_finalize_without_speech_returns_finalize_end_only():
+def test_finalize_without_speech_returns_one_empty_final_then_finalize_end():
+    # the fake server answers a finalize after no speech with finalize_end alone (spec-legal); TEN still gets one
+    # final for its asr_finalize (empty), then asr_finalize_end, as with the gateway's asr_fw engine
     async def go():
         async with session() as (srv, ext):
             await ext.start_connection()
             ext.finalize_id = "f0"
             await ext.finalize("s")
-            assert ext.order == [("finalize_end", None)]
+            assert ext.order == [("result", True), ("finalize_end", None)]
+            assert ext.send_asr_result.await_args_list[-1].args[0].text == ""
 
     run(go())
 
