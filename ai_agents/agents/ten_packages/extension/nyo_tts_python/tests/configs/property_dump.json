@@ -1,0 +1,11 @@
+{
+  "dump": true,
+  "dump_path": "./tests/keep_dump_output/",
+  "params": {
+    "api_key": "${env:NYO_API_KEY}",
+    "base_url": "ws://127.0.0.1:9100",
+    "model": "halohalo/tts-ceb",
+    "sample_rate": 24000,
+    "idle_open_end_ms": 3000
+  }
+}

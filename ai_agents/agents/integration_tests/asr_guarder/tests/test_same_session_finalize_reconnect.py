@@ -18,6 +18,7 @@ from ten_runtime import (
 import asyncio
 import json
 import os
+from .expected_language import pop_expected_language
 
 
 AUDIO_CHUNK_SIZE = 320
@@ -364,17 +365,18 @@ def test_same_session_finalize_reconnect(
 
     with open(config_file_path, "r") as f:
         config: dict[str, Any] = json.load(f)
+    expected_language = pop_expected_language(config, EXPECTED_LANGUAGE)
 
     print(f"Using test configuration: {config}")
     print(f"Audio file path: {audio_file_path}")
     print(
-        f"Expected results: language='{EXPECTED_LANGUAGE}', session_id='{SESSION_ID}'"
+        f"Expected results: language='{expected_language}', session_id='{SESSION_ID}'"
     )
 
     tester = SameSessionFinalizeReconnectTester(
         audio_file_path=audio_file_path,
         session_id=SESSION_ID,
-        expected_language=EXPECTED_LANGUAGE,
+        expected_language=expected_language,
     )
     tester.set_test_mode_single(extension_name, json.dumps(config))
     error = tester.run()

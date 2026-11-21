@@ -1,0 +1,16 @@
+{
+  "dump": false,
+  "dump_path": "/tmp",
+  "params": {
+    "api_key": "${env:NYO_API_KEY|}",
+    "base_url": "${env:NYO_BASE_URL|}",
+    "model": "",
+    "language": "",
+    "sample_rate": 16000,
+    "endpointing_ms": 1000,
+    "allow_insecure": false,
+    "tls_verify": true,
+    "buffer_ms": 2000,
+    "reconnect_window_ms": 120000
+  }
+}

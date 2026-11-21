@@ -1,0 +1,21 @@
+{
+  "dump": false,
+  "dump_path": "/tmp",
+  "params": {
+    "api_key": "${env:NYO_API_KEY|}",
+    "base_url": "${env:NYO_BASE_URL|}",
+    "allow_insecure": false,
+    "tls_verify": true,
+    "model": "halohalo/tts-fil",
+    "voice": "",
+    "language": "",
+    "sample_rate": 24000,
+    "request_timeout_ms": 30000,
+    "reconnect_window_ms": 120000,
+    "segment_idle_ms": 1000,
+    "segment_max_ms": 6000,
+    "boundary_hint_ms": 250,
+    "idle_open_end_ms": 0,
+    "enable_words": false
+  }
+}
