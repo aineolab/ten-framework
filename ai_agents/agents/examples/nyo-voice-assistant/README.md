@@ -18,6 +18,9 @@ agora_rtc → streamid_adapter → stt (nyo_asr_python) → main_control → llm
           ← tts (nyo_tts_python) ←───────────────────────────────────┘
 ```
 
+**Using a coding agent?** Point it at [AGENTS.md](AGENTS.md). [nyo_check.py](nyo_check.py) checks your key and the
+service before you build anything.
+
 ## Prerequisites
 
 | Variable | Required | Meaning |
