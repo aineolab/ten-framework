@@ -100,8 +100,8 @@ venv/bin/python "$REPO/ai_agents/agents/examples/nyo-voice-assistant/nyo_check.p
 ```
 
 Pass: exit code 0 and `7 of 7 checks passed`. Exit 1: a check failed. Exit 2: `NYO_API_KEY` is not set.
-If only the `hil` lines fail, this is most likely the known Hiligaynon fault. Run it once more at most, then continue
-with Filipino and report it. Output files: `sample-fil-http.wav`, `sample-fil.wav`, `sample-hil.wav`.
+If only the `hil` lines fail, run it once more at most, keep the sample files, then continue with Filipino and
+report it. Output files: `sample-fil-http.wav`, `sample-fil.wav`, `sample-hil.wav`.
 
 ### Step 4. Fill in `.env`
 
@@ -195,7 +195,6 @@ dependencies: `../../../ten_packages/extension/nyo_asr_python` and `../../../ten
 | `unknown_voice` (fatal) | Remove `voice`, or use one from `GET /v1/audio/voices` |
 | Close code 1011 on `halohalo/asr-hil` (seen 18 Nov) | Use `fw/whisper-large-v3-pld-hil-norm` |
 | Interims but no final | Set `endpointing_ms` to 1000 |
-| Hiligaynon speech stops early, then silence (seen 18 Nov) | Known fault. Report it; test Filipino first |
 | 413 `input_too_long_use_stream` | Non-stream HTTP speech is limited to 450 characters. Use streaming |
 | HTTP 502 or 503 on every path | Wait 30 s and check `/healthz` once. If still down, stop and report |
 
@@ -211,7 +210,7 @@ latency commitment. Normal processing is in AWS Singapore.
 |---|---|
 | Service healthy, wrong key refused with 401 | Checked 22 Nov 2026 |
 | Code clones without a login; graphs, models and `.env.example` lines as above | Checked 22 Nov 2026 |
-| TEN guarders, live service | 21 Nov 2026: ASR 11 of 11 selected, TTS 60 passed, 11 skipped, 0 failed |
+| TEN guarders, live service | 21 Nov 2026: ASR (Filipino only) 11 of 11 selected, TTS 60 passed, 11 skipped, 0 failed |
 | `nyo_check.py` with a valid key | 18 Nov 2026, 7 of 7, on earlier servers. Not re-run since |
 | Steps 5 and 6 (Docker build, Agora call) | **Not run by NYO**, as far as on record |
-| Hiligaynon TTS fault, `halohalo/asr-hil` fault | Seen 18 Nov 2026. Not re-tested on the current servers |
+| `halohalo/asr-hil` fault | Seen 18 Nov 2026. Not re-tested on the current servers |
