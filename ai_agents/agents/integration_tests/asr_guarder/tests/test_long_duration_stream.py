@@ -19,6 +19,7 @@ import json
 import asyncio
 import os
 import time
+from .expected_language import pop_expected_language
 
 
 # Constants for audio configuration
@@ -421,10 +422,11 @@ def test_long_duration_stream(extension_name: str, config_dir: str) -> None:
     # Load config file
     with open(config_file_path, "r") as f:
         config: dict[str, Any] = json.load(f)
+    expected_language = pop_expected_language(config, DEFAULT_EXPECTED_LANGUAGE)
 
     # Expected test results
     expected_result = {
-        "language": DEFAULT_EXPECTED_LANGUAGE,
+        "language": expected_language,
         "session_id": DEFAULT_SESSION_ID,
     }
 

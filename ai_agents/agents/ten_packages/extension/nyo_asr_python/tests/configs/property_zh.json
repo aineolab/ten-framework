@@ -1,0 +1,13 @@
+{
+  "dump": false,
+  "dump_path": "./tests/dump_output/",
+  "finalize_timeout_ms": 2000,
+  "params": {
+    "api_key": "${env:NYO_API_KEY}",
+    "base_url": "ws://127.0.0.1:9100",
+    "model": "nyo/auto",
+    "language": "zh",
+    "sample_rate": 16000,
+    "interim_results": true
+  }
+}

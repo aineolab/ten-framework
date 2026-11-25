@@ -21,6 +21,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+from .expected_language import pop_expected_language
 
 
 # Constants for audio configuration
@@ -267,6 +268,7 @@ def test_dump(extension_name: str, config_dir: str) -> None:
     # Load config file
     with open(config_file_path, "r") as f:
         config: dict[str, Any] = json.load(f)
+    expected_language = pop_expected_language(config, DUMP_EXPECTED_LANGUAGE)
 
     # Create temporary directory for dump file
     temp_dir = Path(tempfile.gettempdir()) / str(uuid.uuid4())
@@ -287,7 +289,7 @@ def test_dump(extension_name: str, config_dir: str) -> None:
     # Create and run tester
     tester = DumpTester(
         session_id=DUMP_SESSION_ID,
-        expected_language=DUMP_EXPECTED_LANGUAGE,
+        expected_language=expected_language,
         audio_file_path=audio_file_path,
     )
 

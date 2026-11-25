@@ -1,0 +1,10 @@
+{
+  "dump": false,
+  "params": {
+    "api_key": "${env:NYO_API_KEY}",
+    "base_url": "ws://127.0.0.1:9100",
+    "model": "halohalo/tts-ceb",
+    "sample_rate": 24000,
+    "enable_words": true
+  }
+}
